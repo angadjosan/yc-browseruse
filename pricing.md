@@ -26,8 +26,3 @@ Structured rows per product: product/id, region or source, each component (price
 Many sites have no API, anti-scrape, or dynamic/geo pricing. The agent uses a real browser (and optionally geo/proxy) to see what a user in that region sees, then extracts and normalizes — so you get component-level unit economics instead of a single headline number.
 
 ---
-
-QA testing + swarm of browser agents. They all have different personas (test if they would even use your product, a conversion rate from your landing page). Then, they test bottlenecks in your product.
-
-Tech
-use orchestrator claude + browser use subagents. retries and self healing.

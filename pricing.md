@@ -25,4 +25,17 @@ Structured rows per product: product/id, region or source, each component (price
 **Why an agent**  
 Many sites have no API, anti-scrape, or dynamic/geo pricing. The agent uses a real browser (and optionally geo/proxy) to see what a user in that region sees, then extracts and normalizes — so you get component-level unit economics instead of a single headline number.
 
+
+
+4) “Logged-in Research Agent” for procurement / pricing intelligence
+What it does: Logs into competitor dashboards or vendor portals, extracts key pricing/features, diffs weekly, alerts.
+Why it wins: “no more brittle scraping” + recurring value.
+Sponsor usage
+Browser Use: login + extraction
+Convex: scheduled monitoring + diff store
+Laminar: trace + extraction proof
+HUD: eval: “field extraction accuracy”
+Vercel: timeline UI of changes
+Demo moment: “We caught a pricing change behind login and generated a one-pager for sales.”
+
 ---

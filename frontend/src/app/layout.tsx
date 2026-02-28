@@ -13,7 +13,6 @@ const nav = [
   { href: "/watches", label: "Watches" },
   { href: "/history", label: "History" },
   { href: "/evidence", label: "Evidence" },
-  { href: "/settings", label: "Settings" },
 ];
 
 export default function RootLayout({

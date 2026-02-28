@@ -1,4 +1,12 @@
 """Compliance Change Radar — FastAPI application."""
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from backend/ or project root (so "cd backend && uvicorn" finds either)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")  # backend/.env
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")  # project root .env
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -27,10 +35,13 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(router)

@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #e5e5e5;
+  --card: #141414;
+  --card-foreground: #e5e5e5;
+  --primary: #22c55e;
+  --primary-foreground: #0a0a0a;
+  --primary-hover: #16a34a;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --border: #262626;
+  --ring: #22c55e;
+  --success: #22c55e;
+  --warning: #eab308;
+  --destructive: #ef4444;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* SaaS-style subtle gradients and borders */
+.gradient-border {
+  border: 1px solid var(--border);
+  background: linear-gradient(var(--card) 0 0) padding-box,
+    linear-gradient(135deg, rgba(34, 197, 94, 0.15), transparent 50%) border-box;
+}
+
+.card-hover {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.card-hover:hover {
+  border-color: rgba(34, 197, 94, 0.3);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.1);
+}

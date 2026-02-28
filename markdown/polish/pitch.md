@@ -5,6 +5,8 @@ Humans miss small stuff - make sure we TRACK the smaller changes. We get the sma
 
 Magnus and Luka - post it on twitter
 
+Magnus made a demo of this stuff before. 
+
 FOr the demo, do it on a real product. Perhaps agentmail or one of these big ones.
 - find a small change in regulations
 

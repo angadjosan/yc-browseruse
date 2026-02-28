@@ -1,6 +1,12 @@
 **One-liner:** We watch regulator and vendor-policy pages, detect changes, diff and summarize impact, then auto-create a Jira/Linear ticket with an evidence bundle — so compliance teams see what changed and why it matters, without manual page checks.
 
-**In short:** You add URLs to watch (regulator sites, vendor terms, internal policy pages). An agent navigates them on a schedule, captures text and screenshots, diffs against the last run, and when something changes it creates a ticket (Jira/Linear), pings Slack, and attaches the diff, memo, and evidence — judge-friendly and audit-ready.
+https://riskandcompliancemagazine.com/the-power-of-regtech-navigating-the-regulatory-burden
+64,152 alerts annually
+
+https://legal.thomsonreuters.com/en/insights/articles/cost-compliance-changing-world-regulation
+200 per day
+
+**In short:** You give us a description of your product. We identify key compliance-related issues. We build a "watch" for each of those issues. You can also add specific regulation types to watch and create your own watches.  Watches basically have orchestrator claude agents that have browser use subagents that look at each of the specific areas/laws that are updated daily. These do retries + self healing (because we have an orchestrator claude). If a watch gets triggered, an issue summary shows up in Linear. An agent navigates them on a schedule, captures text and screenshots, diffs against the last run, and when something changes it creates a ticket (Linear), pings Slack, and attaches the diff, memo, and evidence — judge-friendly and audit-ready.
 
 ---
 

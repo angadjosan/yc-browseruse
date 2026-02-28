@@ -1,14 +1,17 @@
-**One-liner:** We decompose the full cost of delivering any product (physical or SaaS) so you can see unit economics and arbitrage across regions, channels, or components.
+**One-liner:** We find prices live on the web, spot when there’s a cheaper option or mismatch, and give ecommerce providers the unit economics to dropship or arb — for any product, physical or SaaS.
+
+**In short:** You set an AI-powered pricing alert — when there's a cheaper option or a mismatch (e.g. intl + shipping &lt; US retail), you get notified.
 
 ---
 
 **Pricing arbitrage — any product with a price**
 
 **What it is**  
-An agent that visits live sites (retail, marketplaces, SaaS pricing pages) and extracts every **cost component** of delivering that product — not just list price, but shipping, duties, add-ons, regional tiers, etc. You get normalized unit economics; then you arb (US vs intl, region vs region, or by component).
+An agent that visits **live** sites (retail, marketplaces, SaaS pricing pages) and extracts every **cost component** of delivering that product — not just list price, but shipping, duties, add-ons, regional tiers, etc. You see when there’s a cheaper option or a mismatch (e.g. US vs intl + shipping). Ecommerce providers use this to **dropship** or arb: list where the margin is, source where it’s cheaper. Same idea for SaaS (regional/tier mismatches).
 
 **Physical / shipping**  
 - Unit price, shipping cost, duties, fulfillment or minimum order.  
+- We find prices **live**; when there’s a mismatch (e.g. intl + shipping &lt; US retail), ecommerce providers can dropship — sell in one market, fulfill from the cheaper source.  
 - Example: *Hosui Chojuro pears* — US retail price vs same (or equivalent) from intl source + shipping; output = US price, intl price, shipping, total landed, margin.  
 - Same flow for any SKU: the agent finds where it’s sold, extracts the components, and you compare.
 

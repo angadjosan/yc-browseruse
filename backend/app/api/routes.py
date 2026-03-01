@@ -224,7 +224,7 @@ async def get_watch_changes(watch_id: str, limit: int = 50):
     r = await asyncio.to_thread(
         lambda: (
             db.table("changes")
-            .select("*, watches(name, jurisdiction, scope)")
+            .select("*, watches(name, jurisdiction, scope), evidence_bundles(linear_ticket_url)")
             .eq("watch_id", watch_id)
             .order("detected_at", desc=True)
             .limit(limit)
@@ -321,7 +321,7 @@ async def list_changes(limit: int = 50, watch_id: Optional[str] = None):
     def _query():
         q = (
             db.table("changes")
-            .select("*, watches(name, jurisdiction, scope)")
+            .select("*, watches(name, jurisdiction, scope), evidence_bundles(linear_ticket_url)")
             .order("detected_at", desc=True)
             .limit(limit)
         )
@@ -379,5 +379,4 @@ async def health():
         "browser_use": bool(config.get("browser_use_api_key")),
         "anthropic": bool(config.get("anthropic_api_key")),
         "linear": bool(config.get("linear_api_key")),
-        "slack": bool(config.get("slack_bot_token")),
     }

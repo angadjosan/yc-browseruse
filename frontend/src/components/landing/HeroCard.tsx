@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { DemoRunLoop } from "./DemoRunLoop";
 import { motion } from "framer-motion";
-import { FileCheck, RefreshCw, LayoutList, MessageSquare } from "lucide-react";
+import { FileCheck, RefreshCw, LayoutList } from "lucide-react";
 
 export function HeroCard() {
   return (
@@ -38,9 +38,6 @@ export function HeroCard() {
         </span>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <LayoutList className="h-4 w-4 text-primary" /> Linear/Jira
-        </span>
-        <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <MessageSquare className="h-4 w-4 text-primary" /> Slack
         </span>
       </div>
     </motion.div>

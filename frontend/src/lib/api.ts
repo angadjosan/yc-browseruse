@@ -18,6 +18,22 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
 export const api = {
   watches: {
     list: (): Promise<Watch[]> =>
@@ -26,6 +42,10 @@ export const api = {
       get<Watch>(`/api/watches/${id}`),
     create: (body: CreateWatchBody): Promise<Watch> =>
       post<Watch>("/api/watches", body),
+    update: (id: string, body: Partial<Pick<Watch, "name" | "description"> & { schedule?: { cron: string }; integrations?: Record<string, string> }>): Promise<Watch> =>
+      patch<Watch>(`/api/watches/${id}`, body),
+    delete: (id: string): Promise<{ status: string }> =>
+      del<{ status: string }>(`/api/watches/${id}`),
     run: (id: string): Promise<{ run_id: string; watch_id: string; status: string }> =>
       post(`/api/watches/${id}/run`),
     runs: (id: string): Promise<Run[]> =>
@@ -75,33 +95,6 @@ export type CreateWatchBody = {
     cron: string;
   };
 };
-
-// Raw evidence bundle shape (as returned by backend evidence_service)
-export type EvidenceBundle = {
-  id: string;
-  run_id?: string;
-  change_id?: string;
-  impact_memo?: string;
-  diff_summary?: string;
-  screenshots?: Array<{ type: string; url: string }>;
-  content_hash?: string;
-  audit_metadata?: Record<string, unknown>;
-  s3_urls?: Record<string, string>;
-};
-
-export async function listEvidenceBundles(limit?: number): Promise<EvidenceBundle[]> {
-  const q = limit != null ? `?limit=${limit}` : "";
-  const res = await fetch(`${BASE}/api/evidence${q}`);
-  if (!res.ok) throw new Error(`/api/evidence → ${res.status}`);
-  const data = await res.json();
-  return data.bundles ?? [];
-}
-
-export async function getEvidenceBundle(bundleId: string): Promise<EvidenceBundle> {
-  const res = await fetch(`${BASE}/api/evidence/${bundleId}`);
-  if (!res.ok) throw new Error("Evidence bundle not found");
-  return res.json();
-}
 
 export type OnboardRiskRaw = {
   regulation_title: string;

@@ -26,8 +26,8 @@ need to be able to justify our architecture - why claude with browseruse subagen
 Try it on demo use case - make it see the diff, actually get a full linear issue + slack setup.
 
 1. make it work
-2. do better UX (claude + browser use streaming). do a rotating circle instead of 
+2. do better UX (claude + browser use streaming). do a rotating circle instead of agentic run. Then you can drilldown into agentic run.
 3. do better prompt engineering. fix false negatives + false positives, only do it when real diff.
-Magnus and Luka - post it on twitter
+Magnus and Luka - post it on twitter (need to make auth + deploy it)
 
 better linear / slack integration

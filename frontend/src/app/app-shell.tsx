@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 const nav = [
   { href: "/app", label: "Dashboard" },
   { href: "/watches", label: "Watches" },
-  { href: "/evidence", label: "Evidence" },
+  { href: "/alerts", label: "Alerts" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

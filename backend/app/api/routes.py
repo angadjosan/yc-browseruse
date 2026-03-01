@@ -132,6 +132,32 @@ async def get_watch(watch_id: str):
     return serialized
 
 
+@router.patch("/watches/{watch_id}")
+async def update_watch(watch_id: str, body: dict):
+    """Partial update of a watch (name, description, schedule, integrations)."""
+    svc = WatchService()
+    watch = await svc.get_watch(watch_id)
+    if not watch:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    allowed = {"name", "description", "schedule", "integrations"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    updated = await svc.update_watch(watch_id, **updates)
+    return serialize_watch(updated) if updated else serialize_watch(watch)
+
+
+@router.delete("/watches/{watch_id}")
+async def delete_watch(watch_id: str):
+    """Delete a watch."""
+    svc = WatchService()
+    watch = await svc.get_watch(watch_id)
+    if not watch:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    await svc.delete_watch(watch_id)
+    return {"status": "deleted"}
+
+
 @router.post("/watches/{watch_id}/run")
 async def run_watch_now(watch_id: str):
     """Trigger immediate watch execution. Returns run_id for polling."""

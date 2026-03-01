@@ -6,6 +6,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 import {
   ExternalLink,
   Globe,
@@ -14,6 +15,10 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Pencil,
+  Trash2,
+  X,
+  Check,
 } from "lucide-react";
 
 function formatInterval(seconds?: number): string {
@@ -26,9 +31,14 @@ function formatInterval(seconds?: number): string {
 
 export default function WatchDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const [running, setRunning] = useState(false);
   const [regStateOpen, setRegStateOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const {
     data: watch,
@@ -100,9 +110,58 @@ export default function WatchDetailPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{watch.name}</h1>
-          {watch.description && (
-            <p className="mt-1 text-muted-foreground">{watch.description}</p>
+          {editing ? (
+            <div className="space-y-2">
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 text-lg font-bold text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <textarea
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                rows={2}
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                placeholder="Description..."
+              />
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={saving}
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      await api.watches.update(id, {
+                        name: editName,
+                        description: editDesc,
+                      });
+                      await mutateWatch();
+                      setEditing(false);
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                >
+                  <Check className="mr-1 h-3.5 w-3.5" />
+                  {saving ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setEditing(false)}
+                >
+                  <X className="mr-1 h-3.5 w-3.5" />
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h1 className="text-2xl font-bold text-foreground">{watch.name}</h1>
+              {watch.description && (
+                <p className="mt-1 text-muted-foreground">{watch.description}</p>
+              )}
+            </>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span
@@ -137,6 +196,34 @@ export default function WatchDetailPage() {
               </span>
             )}
           </div>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {!editing && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setEditName(watch.name);
+                  setEditDesc(watch.description || "");
+                  setEditing(true);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={async () => {
+                  if (!window.confirm("Delete this watch? This cannot be undone.")) return;
+                  await api.watches.delete(id);
+                  router.push("/watches");
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
         </div>
         <Button onClick={handleRunNow} disabled={running} className="shrink-0">
           {running ? (
@@ -206,7 +293,7 @@ export default function WatchDetailPage() {
       {changes.length > 0 && (
         <section>
           <h2 className="text-lg font-semibold text-foreground">
-            Changes ({changes.length})
+            Alerts ({changes.length})
           </h2>
           <div className="mt-3 space-y-2">
             {changes.map((c) => (
@@ -266,8 +353,14 @@ export default function WatchDetailPage() {
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-4">
-                    <span className="rounded-full bg-primary/20 px-2 py-0.5 text-xs font-medium text-primary">
-                      completed
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        run.steps?.[run.steps.length - 1]?.status === "done" || !run.endedAt
+                          ? "bg-primary/20 text-primary"
+                          : "bg-destructive/20 text-destructive"
+                      }`}
+                    >
+                      {run.endedAt ? "completed" : "running"}
                     </span>
                     <span className="text-sm text-muted-foreground">
                       {new Date(run.startedAt).toLocaleString()}

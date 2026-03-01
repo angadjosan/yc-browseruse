@@ -48,10 +48,12 @@ export function WatchesCard({ activeJurisdiction, onRunAll, watches: watchesProp
             </p>
           ) : (
             <ul className="space-y-2">
-              {watches.slice(0, 3).map((w) => (
+              {watches.slice(0, 5).map((w) => (
                 <li key={w.id} className="flex items-center justify-between gap-2 text-sm">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-foreground">{w.name}</p>
+                    <Link href={`/watches/${w.id}`} className="truncate font-medium text-foreground hover:text-primary transition-colors">
+                      {w.name}
+                    </Link>
                     <p className="text-xs text-muted-foreground">
                       Next: {w.nextRunAt ? new Date(w.nextRunAt).toLocaleDateString() : "—"} · Last:{" "}
                       {w.lastRunAt ? new Date(w.lastRunAt).toLocaleDateString() : "—"}
@@ -63,6 +65,14 @@ export function WatchesCard({ activeJurisdiction, onRunAll, watches: watchesProp
                 </li>
               ))}
             </ul>
+          )}
+          {watches.length > 5 && (
+            <Link
+              href="/watches"
+              className="block text-center text-xs font-medium text-primary hover:underline"
+            >
+              View all watches &rarr;
+            </Link>
           )}
           <div className="flex gap-2">
             <Button size="sm" onClick={onRunAll} className="flex-1" disabled={watches.length === 0}>

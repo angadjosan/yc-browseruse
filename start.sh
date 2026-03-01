@@ -2,37 +2,52 @@
 # Start full local dev stack: Supabase, Redis, backend (reload), frontend (reload).
 # Logs go to tmp/logs/ — e.g. tail -f tmp/logs/backend.log
 
-set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 LOG_DIR="$SCRIPT_DIR/tmp/logs"
 mkdir -p "$LOG_DIR"
 
+VENV="$SCRIPT_DIR/backend/.venv"
+PYTHON="$VENV/bin/python"
+PIP="$VENV/bin/pip"
+UVICORN="$VENV/bin/uvicorn"
+
+# ── Supabase ────────────────────────────────────────────────────────────────
 echo "==> Stopping any existing Supabase (ignore errors)..."
 supabase stop --no-backup 2>/dev/null || true
 
 echo "==> Starting Supabase..."
-supabase start
+if ! supabase start; then
+  echo "ERROR: supabase start failed. Is Docker Desktop running?"
+  exit 1
+fi
 
 echo "==> Resetting database (migrations + seed)..."
-supabase db reset
+supabase db reset || echo "WARNING: db reset failed, continuing..."
 
-echo "==> Setting up backend..."
-# Setup backend venv if needed
-if [[ ! -d "$SCRIPT_DIR/backend/.venv" ]]; then
-  echo "    Creating Python virtual environment..."
-  cd "$SCRIPT_DIR/backend" && python3 -m venv .venv
+# ── Python venv ─────────────────────────────────────────────────────────────
+echo "==> Setting up Python virtual environment..."
+if [[ ! -f "$VENV/bin/activate" ]]; then
+  echo "    Creating venv at $VENV ..."
+  python3 -m venv "$VENV"
 fi
 
+echo "==> Installing Python dependencies..."
+"$PIP" install -q --upgrade pip
+"$PIP" install -q -r "$SCRIPT_DIR/backend/requirements.txt"
+
+# ── Frontend deps ────────────────────────────────────────────────────────────
 echo "==> Setting up frontend..."
-# Install frontend deps if needed
 if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
-  echo "    Installing npm dependencies (this may take a minute)..."
-  cd "$SCRIPT_DIR/frontend" && npm install
+  echo "    Installing npm dependencies..."
+  cd "$SCRIPT_DIR/frontend" && npm install --legacy-peer-deps
+  cd "$SCRIPT_DIR"
 fi
 
+# ── Start services ───────────────────────────────────────────────────────────
 echo "==> Starting Redis, backend, frontend (logs in $LOG_DIR)..."
+
 REDIS_PID=""
 BACKEND_PID=""
 FRONTEND_PID=""
@@ -40,9 +55,7 @@ FRONTEND_PID=""
 cleanup() {
   echo ""
   echo "==> Shutting down..."
-  for name in FRONTEND BACKEND REDIS; do
-    pid_var="${name}_PID"
-    pid="${!pid_var}"
+  for pid in "$FRONTEND_PID" "$BACKEND_PID" "$REDIS_PID"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -51,31 +64,29 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-# Redis (foreground in background, with log)
+# Redis
 redis-server >> "$LOG_DIR/redis.log" 2>&1 &
 REDIS_PID=$!
 
-# Backend with reload (venv already created above)
+# Backend
 (
-  cd "$SCRIPT_DIR/backend" && \
-  source .venv/bin/activate && \
-  pip install -q -r requirements.txt && \
-  uvicorn app.main:app --reload --port 8000
+  cd "$SCRIPT_DIR/backend"
+  "$UVICORN" app.main:app --reload --port 8000
 ) >> "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
-# Frontend with dev (deps already installed above)
+# Frontend
 (
-  cd "$SCRIPT_DIR/frontend" && \
+  cd "$SCRIPT_DIR/frontend"
   npm run dev
 ) >> "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 echo ""
 echo "Services started. Logs:"
-echo "  backend  tail -f $LOG_DIR/backend.log"
-echo "  frontend tail -f $LOG_DIR/frontend.log"
-echo "  redis    tail -f $LOG_DIR/redis.log"
+echo "  backend  →  tail -f $LOG_DIR/backend.log"
+echo "  frontend →  tail -f $LOG_DIR/frontend.log"
+echo "  redis    →  tail -f $LOG_DIR/redis.log"
 echo ""
 echo "Backend:  http://127.0.0.1:8000"
 echo "Frontend: http://localhost:3000"

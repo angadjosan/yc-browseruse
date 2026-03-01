@@ -25,10 +25,7 @@ export function HeroCard() {
       </p>
       <div className="mt-6 flex flex-wrap gap-3">
         <Button asChild size="lg" className="glow-green">
-          <Link href="/app">Create your radar</Link>
-        </Button>
-        <Button asChild variant="outline" size="lg">
-          <a href="#demo">View demo change</a>
+          <Link href="/analyze">Create your radar</Link>
         </Button>
       </div>
       <DemoRunLoop />

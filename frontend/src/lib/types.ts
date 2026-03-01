@@ -8,6 +8,15 @@ export type Watch = {
   status: "healthy" | "degraded";
   nextRunAt: string;
   lastRunAt: string | null;
+  riskRationale?: string;
+  jurisdiction?: string;
+  scope?: string;
+  sourceUrl?: string;
+  checkIntervalSeconds?: number;
+  currentRegulationState?: string;
+  type?: string;
+  totalRuns?: number;
+  totalChanges?: number;
 };
 
 export type ChangeEvent = {
@@ -41,6 +50,8 @@ export type DiffData = {
   before: string;
   after: string;
   highlights: { type: "add" | "remove" | "unchanged"; text: string }[];
+  complianceSummary?: string;
+  changeSummary?: string;
 };
 
 export type TicketData = {
@@ -49,10 +60,16 @@ export type TicketData = {
   title: string;
 };
 
+export type AgentThought = {
+  target_name: string;
+  thoughts: Record<string, unknown>[];
+};
+
 export type Run = {
   id: string;
   watchId: string;
   watchName?: string;
+  status: "running" | "completed" | "failed";
   startedAt: string;
   endedAt: string;
   steps: RunStep[];
@@ -62,6 +79,8 @@ export type Run = {
   diff: DiffData;
   ticket: TicketData;
   impactMemo?: string[];
+  agentThoughts?: AgentThought[];
+  agentSummary?: string;
 };
 
 export type GlobePoint = {
@@ -70,4 +89,13 @@ export type GlobePoint = {
   label: string;
   type: "regulator" | "vendor";
   jurisdiction: string;
+};
+
+export type OnboardRisk = {
+  regulation_title: string;
+  risk_rationale: string;
+  jurisdiction: string;
+  scope: string;
+  source_url: string;
+  check_interval_seconds: number;
 };

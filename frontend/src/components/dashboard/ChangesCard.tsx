@@ -32,7 +32,7 @@ export function ChangesCard({
     >
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-base">Recent Changes</CardTitle>
+          <CardTitle className="text-base">Latest Alerts</CardTitle>
         </CardHeader>
         <CardContent>
           <ul className="space-y-3">
@@ -70,6 +70,12 @@ export function ChangesCard({
               </li>
             ))}
           </ul>
+          <Link
+            href="/alerts"
+            className="mt-3 block text-center text-xs font-medium text-primary hover:underline"
+          >
+            View all alerts &rarr;
+          </Link>
         </CardContent>
       </Card>
     </motion.div>

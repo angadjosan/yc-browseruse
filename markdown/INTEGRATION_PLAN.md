@@ -22,21 +22,26 @@
 
 ## 1. Current State Audit
 
-### Frontend (branch: `frontend`)
+### Frontend (branch: `main`)
 
 Every page reads from `src/lib/mockData.ts`. Nothing hits the network. The frontend has beautiful, well-structured types in `src/lib/types.ts` — those types become the law.
 
+A legacy `src/lib/api.ts` already exists but uses **raw snake_case DB shapes** (`next_run_at`, `watch_id`, etc.) that don't match `types.ts`. It must be **replaced** entirely with the new typed API client described in §6a.
+
 | Page | Mock source used | Real endpoint needed |
 |------|----------------|---------------------|
-| `/app` (Dashboard) | `watches`, `changeEvents`, `globePoints` | `GET /api/watches`, `GET /api/changes` |
+| `/app` (Dashboard) | `changeEvents`, `globePoints` (WatchesCard imports internally) | `GET /api/watches`, `GET /api/changes`, `GET /api/globe-points` |
 | `/watches` | `watches` | `GET /api/watches` |
 | `/watches/[id]` | `watches`, `runs` | `GET /api/watches/{id}`, `GET /api/watches/{id}/runs` |
-| `/app/run/[id]` | `runs` via `getRunById` | `GET /api/runs/{id}` (new full shape) |
+| `/app/run/[id]` | `runs` via `getRunById` | `GET /api/runs/{id}` (full shape) |
 | `/history` | `runs` | `GET /api/runs/recent` |
 
-The `CommandBar` "Run All" button runs a fake-progress animation loop — no API call. The `WatchesCard` `onRunAll` prop feeds this. That's the main interactive piece to wire up.
+**Important component notes:**
+- `WatchesCard` internally calls `getWatchesByJurisdiction()` from mockData — it has **no `watches` prop**. Wiring requires adding a `watches` prop to `WatchesCard` (see §7).
+- `ChangesCard` accepts `changes: ChangeEvent[]` as a prop, driven by dashboard state.
+- The `CommandBar` "Run All" button drives a fake step animation — no API call.
 
-### Backend (branch: `main` + `ai-shit`)
+### Backend (branch: `main`)
 
 Fully wired FastAPI + Supabase pipeline. Existing endpoints:
 
@@ -45,12 +50,14 @@ POST   /api/watches                  create watch
 GET    /api/watches                  list watches
 GET    /api/watches/{id}             single watch
 POST   /api/watches/{id}/run         trigger run (backgrounded)
-GET    /api/watches/{id}/history     runs for a watch
-GET    /api/runs/recent              all recent runs
-GET    /api/runs/{id}                single run
+GET    /api/watches/{id}/history     runs for a watch (raw shape)
+GET    /api/runs/recent              all recent runs (raw shape)
+GET    /api/runs/{id}                single run (raw shape)
 GET    /api/evidence                 list evidence bundles
 GET    /api/evidence/{id}            single evidence bundle
 GET    /api/health                   dependency status
+POST   /api/analyze-product          queue product analysis (returns job_id)
+GET    /api/analyze-product/{job_id} poll analysis job status
 ```
 
 **AI pipeline writes per run:**
@@ -60,7 +67,14 @@ GET    /api/health                   dependency status
 - `changes.diff_details` — `{text_diff: {additions, deletions}, semantic_diff: {summary, impact_level, key_changes, recommended_actions}}`
 - `evidence_bundles` — Claude impact memo, screenshots, content hashes, HMAC signature
 
-The problem: the existing endpoints return raw DB column names in snake_case with DB-native types. The frontend expects camelCase with specific union types (`"healthy" | "degraded"`, `"low" | "med" | "high"`, etc.). **The backend needs to shape its responses to match the frontend types exactly.**
+**DB watch column layout (important for serializers):**
+- `jurisdiction` — top-level string column (e.g. `"EU"`, `"California"`) set by `ProductAnalyzer`
+- `source_url` — top-level string column (URL to regulation source)
+- `regulation_title`, `risk_rationale`, `scope`, `check_interval_seconds`, `current_regulation_state` — top-level columns
+- `config.targets` — array of scraping targets
+- `schedule` — `{"cron": "0 9 * * *", "timezone": "UTC"}` top-level column
+
+The problem: existing endpoints return raw DB column names in snake_case. The frontend expects camelCase with specific union types (`"healthy" | "degraded"`, `"low" | "med" | "high"`, etc.). **The backend needs to shape its responses to match the frontend types exactly.**
 
 ---
 
@@ -152,6 +166,8 @@ All the mapping logic lives in the backend — in a new `backend/app/serializers
 
 ### `Watch` serializer
 
+> **Note:** `jurisdiction` and `source_url` are **top-level DB columns**, not nested inside `config`. `config` only contains `targets` and `schedule`.
+
 ```python
 # backend/app/serializers.py
 
@@ -159,6 +175,7 @@ CRON_TO_LABEL = {
     "0 9 * * *": "daily",
     "0 9 * * 1": "weekly",
     "0 9 1 * *": "monthly",
+    "0 * * * *":  "hourly",
 }
 
 def serialize_watch(row: dict) -> dict:
@@ -175,17 +192,43 @@ def serialize_watch(row: dict) -> dict:
     if not next_run_at and row.get("last_run_at"):
         next_run_at = _compute_next_run(row["last_run_at"], cron)
 
+    # jurisdiction is a top-level column (string), not inside config
+    jurisdiction = row.get("jurisdiction") or ""
+    jurisdictions = [jurisdiction] if jurisdiction else []
+
+    # source_url is a top-level column (string), not inside config
+    source_url = row.get("source_url") or ""
+    sources = [source_url] if source_url else []
+
     return {
         "id": str(row["id"]),
         "name": row["name"],
         "description": row.get("description") or "",
         "schedule": schedule_label,
-        "jurisdictions": config.get("jurisdictions") or [],
-        "sources": config.get("sources") or [],
+        "jurisdictions": jurisdictions,
+        "sources": sources,
         "status": status,
         "nextRunAt": next_run_at or "",
         "lastRunAt": row.get("last_run_at"),
     }
+
+
+import re as _re
+from datetime import datetime, timedelta
+
+def _compute_next_run(last_run_at: str, cron: str) -> str | None:
+    try:
+        last = datetime.fromisoformat(last_run_at.replace("Z", "+00:00"))
+        deltas = {
+            "0 9 * * *": timedelta(days=1),
+            "0 9 * * 1": timedelta(weeks=1),
+            "0 9 1 * *": timedelta(days=30),
+            "0 * * * *": timedelta(hours=1),
+        }
+        delta = deltas.get(cron, timedelta(days=1))
+        return (last + delta).isoformat()
+    except Exception:
+        return None
 ```
 
 ### `ChangeEvent` serializer
@@ -194,16 +237,21 @@ def serialize_watch(row: dict) -> dict:
 IMPACT_TO_SEVERITY = {"low": "low", "medium": "med", "high": "high"}
 
 def serialize_change_event(row: dict, watch: dict) -> dict:
-    watch_config = (watch.get("config") or {}) if watch else {}
-    jurisdictions = watch_config.get("jurisdictions") or []
+    # jurisdiction is a top-level column on watches
+    jurisdiction = (watch.get("jurisdiction") or "") if watch else ""
+    # source_type derived from watch scope or default to "regulator"
+    source_type = (watch.get("scope") or "regulator") if watch else "regulator"
+    # Normalize: only allow "regulator" | "vendor"
+    if source_type not in ("regulator", "vendor"):
+        source_type = "regulator"
     return {
         "id": str(row["id"]),
         "watchId": str(row["watch_id"]),
         "title": watch.get("name", row.get("target_name", "")) if watch else row.get("target_name", ""),
         "memo": row.get("diff_summary") or "",
         "severity": IMPACT_TO_SEVERITY.get(row.get("impact_level", "medium"), "med"),
-        "jurisdiction": jurisdictions[0] if jurisdictions else "",
-        "sourceType": watch_config.get("source_type", "regulator"),
+        "jurisdiction": jurisdiction,
+        "sourceType": source_type,
         "createdAt": row.get("created_at", ""),
         "runId": str(row["run_id"]),
     }
@@ -215,12 +263,17 @@ This is the most important. A single `GET /api/runs/{id}` call should return the
 
 ```python
 def serialize_run(run_row: dict, watch: dict, changes: list, evidence_bundles: list) -> dict:
-    # steps: derive from agent_thoughts
-    steps = _agent_thoughts_to_steps(run_row.get("agent_thoughts") or [])
+    # steps: prefer run_steps_log (real-time) over agent_thoughts (post-hoc)
+    steps_log = run_row.get("run_steps_log") or []
+    if steps_log:
+        steps = steps_log
+    else:
+        steps = _agent_thoughts_to_steps(run_row.get("agent_thoughts") or [])
+
     # Always append Diffing + Ticketing steps based on run outcome
     if run_row["status"] in ("completed", "failed"):
-        steps.append({"name": "Diffing", "status": "done" if changes else "done", "timestamp": run_row.get("completed_at")})
-        steps.append({"name": "Ticketing", "status": "done" if _has_ticket(changes, evidence_bundles) else "done"})
+        steps.append({"name": "Diffing", "status": "done", "timestamp": run_row.get("completed_at")})
+        steps.append({"name": "Ticketing", "status": "done", "timestamp": run_row.get("completed_at")})
 
     # diff: from first change with diff_details
     diff = _serialize_diff(changes[0] if changes else None)
@@ -249,9 +302,28 @@ def serialize_run(run_row: dict, watch: dict, changes: list, evidence_bundles: l
         "impactMemo": impact_memo,
     }
 
+
+def _serialize_run_lean(run_row: dict, watch: dict) -> dict:
+    """Lean shape for list views — no diff/artifacts/ticket (expensive per-row fetches)."""
+    steps_log = run_row.get("run_steps_log") or []
+    steps = steps_log if steps_log else _agent_thoughts_to_steps(run_row.get("agent_thoughts") or [])
+    return {
+        "id": str(run_row["id"]),
+        "watchId": str(run_row["watch_id"]),
+        "watchName": watch.get("name") if watch else None,
+        "startedAt": run_row["started_at"],
+        "endedAt": run_row.get("completed_at") or run_row["started_at"],
+        "steps": steps,
+        "selfHealed": (run_row.get("tasks_failed", 0) > 0 and run_row["status"] == "completed"),
+        "retries": run_row.get("tasks_failed", 0),
+        "artifacts": [],
+        "diff": {"before": "", "after": "", "highlights": []},
+        "ticket": {"provider": "linear", "url": "", "title": ""},
+    }
+
+
 def _agent_thoughts_to_steps(thoughts: list) -> list:
     # BrowserUse AgentBrain objects → RunStep[]
-    # Each thought has action_name, thought text, timestamp
     step_names = ["Searching", "Navigating", "Capturing", "Hashing"]
     if not thoughts:
         return [{"name": n, "status": "done"} for n in step_names]
@@ -265,6 +337,7 @@ def _agent_thoughts_to_steps(thoughts: list) -> list:
         })
     return out
 
+
 def _serialize_diff(change: dict | None) -> dict:
     if not change:
         return {"before": "", "after": "", "highlights": []}
@@ -272,7 +345,6 @@ def _serialize_diff(change: dict | None) -> dict:
     text_diff = details.get("text_diff") or {}
     semantic = details.get("semantic_diff") or {}
 
-    # before/after: use semantic summary sentences or raw additions/deletions
     additions = text_diff.get("additions") or []
     deletions = text_diff.get("deletions") or []
     before = " ".join(deletions[:3]) if deletions else semantic.get("summary", "")
@@ -284,8 +356,8 @@ def _serialize_diff(change: dict | None) -> dict:
     )
     return {"before": before, "after": after, "highlights": highlights}
 
+
 def _serialize_ticket(evidence_bundles: list, changes: list) -> dict:
-    # Try evidence bundle first, then changes
     for eb in evidence_bundles:
         url = eb.get("linear_ticket_url") or eb.get("jira_ticket_url")
         if url:
@@ -303,6 +375,7 @@ def _serialize_ticket(evidence_bundles: list, changes: list) -> dict:
                 "title": c.get("diff_summary") or "Compliance change detected",
             }
     return {"provider": "linear", "url": "", "title": "No ticket created"}
+
 
 def _serialize_artifacts(bundle: dict | None) -> list:
     if not bundle:
@@ -334,11 +407,11 @@ def _serialize_artifacts(bundle: dict | None) -> list:
         })
     return artifacts
 
+
 def _serialize_impact_memo(bundle: dict | None) -> list[str] | None:
     if not bundle or not bundle.get("impact_memo"):
         return None
     memo = bundle["impact_memo"]
-    # Split on double newline or numbered sections into bullet strings
     import re
     parts = re.split(r"\n{2,}|(?=\d+\.\s)", memo.strip())
     return [p.strip() for p in parts if p.strip()][:6]  # max 6 bullets
@@ -353,33 +426,38 @@ JURISDICTION_COORDS = {
     "EU":    {"lat": 50.85, "lng": 4.35},
     "US":    {"lat": 38.9,  "lng": -77.0},
     "US-CA": {"lat": 37.77, "lng": -122.42},
+    "California": {"lat": 37.77, "lng": -122.42},
     "UK":    {"lat": 51.51, "lng": -0.09},
     "JP":    {"lat": 35.68, "lng": 139.69},
     "AU":    {"lat": -33.86,"lng": 151.21},
     "CA":    {"lat": 45.42, "lng": -75.69},
     "DE":    {"lat": 52.52, "lng": 13.4},
     "FR":    {"lat": 48.85, "lng": 2.35},
+    "Global": {"lat": 0.0, "lng": 0.0},
+    "United States": {"lat": 38.9, "lng": -77.0},
 }
 
 def serialize_globe_points(watches: list) -> list:
     seen = set()
     points = []
     for w in watches:
-        config = w.get("config") or {}
-        jurisdictions = config.get("jurisdictions") or []
-        sources = config.get("sources") or []
-        source_type = config.get("source_type", "regulator")
-        for j in jurisdictions:
-            key = f"{j}:{sources[0] if sources else w['name']}"
-            if key not in seen and j in JURISDICTION_COORDS:
-                seen.add(key)
-                points.append({
-                    "lat": JURISDICTION_COORDS[j]["lat"],
-                    "lng": JURISDICTION_COORDS[j]["lng"],
-                    "label": sources[0] if sources else w["name"],
-                    "type": source_type,
-                    "jurisdiction": j,
-                })
+        # jurisdiction is a top-level column, not inside config
+        jurisdiction = w.get("jurisdiction") or ""
+        source_url = w.get("source_url") or ""
+        # Normalize source_type from scope field or default
+        scope = w.get("scope") or "regulator"
+        source_type = scope if scope in ("regulator", "vendor") else "regulator"
+
+        key = f"{jurisdiction}:{w['name']}"
+        if key not in seen and jurisdiction in JURISDICTION_COORDS:
+            seen.add(key)
+            points.append({
+                "lat": JURISDICTION_COORDS[jurisdiction]["lat"],
+                "lng": JURISDICTION_COORDS[jurisdiction]["lng"],
+                "label": w["name"],
+                "type": source_type,
+                "jurisdiction": jurisdiction,
+            })
     return points
 ```
 
@@ -391,7 +469,7 @@ The existing routes return raw DB shapes. We need to update existing responses A
 
 ### 4a. Update `GET /api/watches` and `GET /api/watches/{id}`
 
-Change the `_watch_to_response` helper in `routes.py` to call `serialize_watch()` instead of the current hand-rolled dict. This is the only change to existing endpoints.
+Change the `_watch_to_response` helper in `routes.py` to call `serialize_watch()` instead of the current hand-rolled dict.
 
 ```python
 # routes.py
@@ -406,6 +484,7 @@ async def list_watches():
 @router.get("/globe-points")
 async def globe_points():
     """Derive globe data from real watches — replaces hardcoded mock globePoints."""
+    svc = WatchService()
     watches = await svc.list_watches(DEFAULT_ORG_ID)
     return {"points": serialize_globe_points(watches)}
 ```
@@ -417,11 +496,13 @@ Changes list, shaped as `ChangeEvent[]`. Used by `ChangesCard` and `/history` pa
 ```python
 @router.get("/changes")
 async def list_changes(limit: int = 50, watch_id: Optional[str] = None):
+    from app.db import get_supabase
+    from app.serializers import serialize_change_event
     db = get_supabase()
-    q = db.table("changes").select("*, watches(name, config)").order("created_at", desc=True).limit(limit)
+    q = db.table("changes").select("*, watches(name, jurisdiction, scope)").order("created_at", desc=True).limit(limit)
     if watch_id:
         q = q.eq("watch_id", watch_id)
-    r = q.execute()
+    r = await asyncio.to_thread(lambda: q.execute())
 
     result = []
     for row in (r.data or []):
@@ -432,13 +513,12 @@ async def list_changes(limit: int = 50, watch_id: Optional[str] = None):
 
 ### 4c. New: `GET /api/watches/{watch_id}/changes`
 
-Scoped version for watch detail page.
+Scoped version for watch detail page — reuses the logic above with a filter.
 
 ```python
 @router.get("/watches/{watch_id}/changes")
 async def get_watch_changes(watch_id: str):
-    # reuse list_changes logic with watch_id filter
-    ...
+    return await list_changes(watch_id=watch_id)
 ```
 
 ### 4d. Update `GET /api/runs/{run_id}` — return full `Run` shape
@@ -448,87 +528,79 @@ The existing endpoint returns a thin summary. Update it to return the complete `
 ```python
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    db = get_supabase()
+    from app.db import get_supabase
+    from app.serializers import serialize_run
+    svc = WatchService()
     run_row = await svc.get_run(run_id)
     if not run_row:
         raise HTTPException(404)
     watch = await svc.get_watch(str(run_row["watch_id"])) if run_row.get("watch_id") else None
+    db = get_supabase()
 
-    # Fetch changes for this run
-    changes_r = db.table("changes").select("*").eq("run_id", run_id).order("created_at").execute()
+    changes_r = await asyncio.to_thread(
+        lambda: db.table("changes").select("*").eq("run_id", run_id).order("created_at").execute()
+    )
     changes = changes_r.data or []
 
-    # Fetch evidence bundles for this run
-    evidence_r = db.table("evidence_bundles").select("*").eq("run_id", run_id).order("created_at").execute()
+    evidence_r = await asyncio.to_thread(
+        lambda: db.table("evidence_bundles").select("*").eq("run_id", run_id).order("created_at").execute()
+    )
     evidence = evidence_r.data or []
 
     return serialize_run(run_row, watch, changes, evidence)
 ```
 
-### 4e. Update `GET /api/runs/recent` — return `Run[]` shape
-
-Same as above but for the list. The history page just needs `id, watchId, watchName, startedAt, endedAt, selfHealed, retries, steps` — the list view doesn't need full diff/artifacts, so return a lean version.
+### 4e. Update `GET /api/runs/recent` — return lean `Run[]` shape
 
 ```python
 @router.get("/runs/recent")
 async def recent_runs(limit: int = 50):
+    from app.db import get_supabase
+    from app.serializers import _serialize_run_lean
     db = get_supabase()
-    r = db.table("watch_runs").select("*, watches(name)").order("started_at", desc=True).limit(limit).execute()
+    r = await asyncio.to_thread(
+        lambda: db.table("watch_runs").select("*, watches(name, jurisdiction, scope)").order("started_at", desc=True).limit(limit).execute()
+    )
     result = []
     for row in (r.data or []):
-        watch = {"name": (row.pop("watches") or {}).get("name")}
-        # Lean shape for list view — no diff/artifacts/ticket (expensive to fetch for 50 rows)
-        result.append({
-            "id": str(row["id"]),
-            "watchId": str(row["watch_id"]),
-            "watchName": watch["name"],
-            "startedAt": row["started_at"],
-            "endedAt": row.get("completed_at") or row["started_at"],
-            "steps": _agent_thoughts_to_steps(row.get("agent_thoughts") or []),
-            "selfHealed": (row.get("tasks_failed", 0) > 0 and row["status"] == "completed"),
-            "retries": row.get("tasks_failed", 0),
-            "artifacts": [],
-            "diff": {"before": "", "after": "", "highlights": []},
-            "ticket": {"provider": "linear", "url": "", "title": ""},
-        })
+        watch = row.pop("watches", None) or {}
+        result.append(_serialize_run_lean(row, watch))
     return {"runs": result}
 ```
 
 ### 4f. New: `GET /api/watches/{watch_id}/runs`
 
-The watch detail page lists runs for a specific watch. Currently this is `GET /api/watches/{id}/history` but it returns a summary shape. Add this alias that returns lean `Run[]`.
+The watch detail page lists runs for a specific watch. This is distinct from the existing `/history` endpoint (which returns raw shapes). Returns lean `Run[]`.
 
 ```python
 @router.get("/watches/{watch_id}/runs")
 async def get_watch_runs(watch_id: str, limit: int = 50):
+    from app.serializers import _serialize_run_lean
+    svc = WatchService()
     runs = await svc.get_watch_runs(watch_id, limit=limit)
     watch = await svc.get_watch(watch_id)
-    return {"runs": [_serialize_run_lean(r, watch) for r in runs]}
+    return {"runs": [_serialize_run_lean(r, watch or {}) for r in runs]}
 ```
 
-### 4g. New: `POST /api/onboard` + `GET /api/onboard/{job_id}`
+### 4g. New: `GET /api/globe-points`
 
-The AI onboarding flow — see §9.
+Already described in §4a. New endpoint that returns `GlobePoint[]` derived from watches.
 
 ### 4h. Update `POST /api/watches/{id}/run` — return `run_id` immediately
 
-Currently returns `{"status": "queued", ...}`. Add `run_id` so the frontend can immediately poll/stream that specific run.
+Currently returns `{"status": "queued", ...}` without a `run_id`. Add `run_id` so the frontend can immediately poll that specific run. `svc.create_run()` already exists in `WatchService`.
 
 ```python
-# In routes.py
-async def _execute_watch_background(watch_id: str, run_id: str):
-    orchestrator = OrchestratorEngine()
-    await orchestrator.execute_watch(watch_id)
-
 @router.post("/watches/{watch_id}/run")
 async def run_watch_now(watch_id: str, background_tasks: BackgroundTasks):
+    svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
         raise HTTPException(404)
     # Create the run row NOW (before backgrounding) so we have the ID
     run = await svc.create_run(watch_id, status="running")
     run_id = str(run["id"])
-    background_tasks.add_task(_execute_watch_background, watch_id, run_id)
+    background_tasks.add_task(_execute_watch_background, watch_id)
     return {"status": "queued", "watch_id": watch_id, "run_id": run_id}
 ```
 
@@ -542,22 +614,22 @@ All additive — no existing columns removed or renamed.
 
 | Column | Type | Default | Reason |
 |--------|------|---------|--------|
-| `agent_summary` | `text` | `null` | Already in ai-shit branch — migrate to main |
-| `agent_thoughts` | `jsonb` | `null` | Already in ai-shit branch — migrate to main |
-| `run_steps_log` | `jsonb` | `[]` | Real-time step-by-step log written during execution; powers the SSE stream |
+| `agent_summary` | `text` | `null` | Already exists in DB — verify migration |
+| `agent_thoughts` | `jsonb` | `null` | Already exists in DB — verify migration |
+| `run_steps_log` | `jsonb` | `[]` | Real-time step-by-step log written during execution; powers polling |
 
 ### `changes` table
 
 | Column | Type | Default | Reason |
 |--------|------|---------|--------|
-| `linear_ticket_url` | `text` | `null` | Currently buried in evidence_bundles; surface here for direct access |
+| `linear_ticket_url` | `text` | `null` | Surface ticket URL for direct access |
 | `jira_ticket_url` | `text` | `null` | Same |
 
 ### `evidence_bundles` table
 
 | Column | Type | Default | Reason |
 |--------|------|---------|--------|
-| `linear_ticket_url` | `text` | `null` | Store ticket URL here too for direct join |
+| `linear_ticket_url` | `text` | `null` | Store ticket URL here for direct join |
 | `ticket_title` | `text` | `null` | Linear/Jira ticket title |
 
 ### `watches` table
@@ -570,11 +642,11 @@ All additive — no existing columns removed or renamed.
 
 ## 6. Frontend Changes (Minimal)
 
-**The frontend barely changes.** No types change, no components change. Only two things happen:
+**The frontend barely changes.** No types change, no run/evidence components change. Three things happen:
 
-### 6a. Add `src/lib/api.ts`
+### 6a. Replace `src/lib/api.ts`
 
-A single thin typed fetch wrapper. Returns exactly the shapes from `types.ts` because the backend now outputs them directly.
+The existing `api.ts` has raw snake_case types (`Watch` with `next_run_at`, `WatchRun`, etc.) that conflict with `types.ts`. **Replace the entire file** with this typed API client:
 
 ```ts
 // src/lib/api.ts
@@ -600,16 +672,19 @@ import type { Watch, ChangeEvent, Run, GlobePoint } from "./types";
 
 export const api = {
   watches: {
-    list: ():    Promise<Watch[]>      => get<{watches?: Watch[]} | Watch[]>("/api/watches").then(r => Array.isArray(r) ? r : r.watches ?? []),
-    get:  (id:string): Promise<Watch> => get(`/api/watches/${id}`),
+    list: ():             Promise<Watch[]>      => get<Watch[]>("/api/watches"),
+    get:  (id: string):  Promise<Watch>        => get(`/api/watches/${id}`),
     create: (body: CreateWatchBody): Promise<Watch> => post("/api/watches", body),
-    run: (id: string): Promise<{ run_id: string }> => post(`/api/watches/${id}/run`),
-    runs: (id: string): Promise<Run[]> => get<{runs: Run[]}>(`/api/watches/${id}/runs`).then(r => r.runs),
-    changes: (id: string): Promise<ChangeEvent[]> => get<{changes: ChangeEvent[]}>(`/api/watches/${id}/changes`).then(r => r.changes),
+    run: (id: string):   Promise<{ run_id: string; watch_id: string; status: string }> =>
+      post(`/api/watches/${id}/run`),
+    runs: (id: string):    Promise<Run[]>        =>
+      get<{runs: Run[]}>(`/api/watches/${id}/runs`).then(r => r.runs),
+    changes: (id: string): Promise<ChangeEvent[]> =>
+      get<{changes: ChangeEvent[]}>(`/api/watches/${id}/changes`).then(r => r.changes),
   },
   runs: {
-    recent: (): Promise<Run[]>       => get<{runs: Run[]}>("/api/runs/recent").then(r => r.runs),
-    get: (id: string): Promise<Run>  => get(`/api/runs/${id}`),
+    recent: (): Promise<Run[]>      => get<{runs: Run[]}>("/api/runs/recent").then(r => r.runs),
+    get: (id: string): Promise<Run> => get(`/api/runs/${id}`),
   },
   changes: {
     list: (limit = 50): Promise<ChangeEvent[]> =>
@@ -621,8 +696,9 @@ export const api = {
   },
   onboard: {
     start: (productUrl: string): Promise<{ job_id: string }> =>
-      post("/api/onboard", { product_url: productUrl }),
-    status: (jobId: string) => get<OnboardStatus>(`/api/onboard/${jobId}`),
+      post("/api/analyze-product", { product_url: productUrl }),
+    status: (jobId: string): Promise<OnboardStatus> =>
+      get<OnboardStatus>(`/api/analyze-product/${jobId}`),
   },
 };
 
@@ -630,9 +706,6 @@ export type CreateWatchBody = {
   name: string;
   description?: string;
   config: {
-    jurisdictions?: string[];
-    sources?: string[];
-    source_type?: "regulator" | "vendor";
     targets: Array<{
       name: string;
       starting_url?: string;
@@ -643,19 +716,16 @@ export type CreateWatchBody = {
 };
 
 export type OnboardStatus = {
-  status: "processing" | "completed" | "failed";
-  stage?: "scraping" | "analyzing" | "creating_watches";
-  risks?: OnboardRisk[];
-  watches_created?: Watch[];
-};
-
-export type OnboardRisk = {
-  regulation_title: string;
-  why_its_a_risk: string;
-  jurisdiction: string;
-  source_type: "regulator" | "vendor";
-  impact_level: "low" | "med" | "high";
-  source_url: string;
+  status: "pending" | "running" | "completed" | "failed";
+  product_url?: string;
+  risks_identified?: number;       // count of identified risks
+  watches_created?: number;        // count of watches created
+  watches?: Watch[];               // serialized Watch[] (only on "completed")
+  product_info?: {
+    content_preview: string;
+    url: string;
+  };
+  error?: string;
 };
 ```
 
@@ -671,7 +741,29 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 npm install swr
 ```
 
-That's it for new files. Everything else is surgical replacements in pages.
+### 6d. Add `watches` prop to `WatchesCard`
+
+`WatchesCard` currently calls `getWatchesByJurisdiction()` internally from mockData — it has no external `watches` prop. Add an optional prop so the dashboard can pass real data:
+
+```diff
+// src/components/dashboard/WatchesCard.tsx
+- import { getWatchesByJurisdiction } from "@/lib/mockData";
++ import { getWatchesByJurisdiction } from "@/lib/mockData";
++ import type { Watch } from "@/lib/types";
+
+  type WatchesCardProps = {
+    activeJurisdiction: string | null;
+    onRunAll: () => void;
++   watches?: Watch[];   // if provided, skip mock lookup
+  };
+
+  export function WatchesCard({ activeJurisdiction, onRunAll, watches: watchesProp }: WatchesCardProps) {
+-   const watches = getWatchesByJurisdiction(activeJurisdiction);
++   const allWatches = watchesProp ?? getWatchesByJurisdiction(null);
++   const watches = activeJurisdiction
++     ? allWatches.filter(w => w.jurisdictions.includes(activeJurisdiction))
++     : allWatches;
+```
 
 ---
 
@@ -689,45 +781,69 @@ Each page gets the same treatment: delete the mock import, add `useSWR`.
 
 ```ts
 // Replace mock data refs:
-const { data: changes = [] } = useSWR("changes", () => api.changes.list(20));
+const { data: changes = [], mutate: mutateChanges } = useSWR("changes", () => api.changes.list(20));
 const { data: watches = [] } = useSWR("watches", api.watches.list);
 const { data: globePoints = [] } = useSWR("globe", api.globe.points);
 const { data: recentRuns = [] } = useSWR("runs/recent", api.runs.recent);
 ```
 
-**`runAll` button:** Replace the fake animation with a real call. The step animation logic already exists and works — just drive it off a real `run_id` poll instead of a `setTimeout` chain.
+Pass `watches` to `WatchesCard` (uses the new prop from §6d):
+```tsx
+<WatchesCard
+  watches={watches}
+  activeJurisdiction={activeJurisdiction}
+  onRunAll={runAll}
+/>
+```
+
+**`runAll` button:** Replace the fake animation with a real call. The step animation logic already exists and works — just drive it off a real `run_id` poll:
 
 ```ts
-const runAll = useCallback(async () => {
-  if (isRunning) return;
+const runAll = React.useCallback(async () => {
+  if (isRunning || watches.length === 0) return;
   setIsRunning(true);
-  setCurrentRunSteps(RUN_STEP_NAMES.map(name => ({ name, status: "pending" })));
+  setCurrentRunSteps(RUN_STEP_NAMES.map(name => ({ name, status: "pending" as const })));
 
-  // Trigger first watch (or all) — get run_id back
   const { run_id } = await api.watches.run(watches[0].id);
 
   // Poll run until complete; update steps from run.steps
   const poll = setInterval(async () => {
-    const run = await api.runs.get(run_id);
-    setCurrentRunSteps(run.steps);
-    if (run.endedAt && run.endedAt !== run.startedAt) {
+    try {
+      const run = await api.runs.get(run_id);
+      setCurrentRunSteps(run.steps);
+      if (run.endedAt && run.endedAt !== run.startedAt) {
+        clearInterval(poll);
+        setIsRunning(false);
+        mutateChanges();   // refresh changes card
+      }
+    } catch {
       clearInterval(poll);
       setIsRunning(false);
-      mutate("changes");   // refresh changes card
-      mutate("watches");   // refresh watches card
     }
   }, 2000);
-}, [isRunning, watches]);
+}, [isRunning, watches, mutateChanges]);
 ```
 
-**Globe:** `JurisdictionGlobe` receives `points={globePoints}` — no component change, just real data.
-
-**`RunsCard`:** Already accepts `completionRate` and `falsePositiveRate` as props. Compute from `recentRuns`:
+**`RunsCard` completion rate** — compute from real data:
 ```ts
 const completionRate = recentRuns.length
   ? Math.round(recentRuns.filter(r => !r.selfHealed).length / recentRuns.length * 100)
   : 98;
 ```
+
+**`ChangesCard`** — change from state to SWR data directly (no more `setChanges`):
+```diff
+- const [changes, setChanges] = React.useState<ChangeEvent[]>(changeEvents);
++ // changes already comes from useSWR above
+
+  <ChangesCard
+    activeJurisdiction={activeJurisdiction}
+    changes={changes}
+-   setChanges={setChanges}
+  />
+```
+
+**Globe:** `JurisdictionGlobe` receives `points={globePoints}` — no component change, just real data.
 
 ### `/watches` — Watch List
 
@@ -739,7 +855,7 @@ const completionRate = recentRuns.length
 + const { data: watches = [] } = useSWR("watches", api.watches.list);
 ```
 
-Component receives `watches` — unchanged.
+Component renders `watches` — unchanged.
 
 ### `/watches/[id]` — Watch Detail
 
@@ -752,7 +868,7 @@ Component receives `watches` — unchanged.
 + const { data: watchRuns = [] } = useSWR(`watch/${id}/runs`, () => api.watches.runs(id));
 ```
 
-The page already renders `watch` and `watchRuns` — no component logic changes. The existing `runs.filter(r => r.watchId === watch.id)` becomes the real API result.
+Replace `watches.find(...)` with the `watch` SWR result; replace `runs.filter(...)` with `watchRuns`.
 
 ### `/app/run/[id]` — Run Detail
 
@@ -765,9 +881,10 @@ The page already renders `watch` and `watchRuns` — no component logic changes.
 + const { data: run } = useSWR(id ? `run/${id}` : null, () => api.runs.get(id!));
 ```
 
-`run` already has the full `Run` shape (steps, diff, ticket, artifacts, impactMemo) because the backend serializes it that way. Components receive exactly what they already expect. **Nothing in `RunTimeline`, `DiffViewer`, or `EvidenceBundle` changes.**
-
-Loading state (currently missing from mock): add a check for `if (!run) return <LoadingSpinner />`.
+`run` already has the full `Run` shape. **Nothing in `RunTimeline`, `DiffViewer`, or `EvidenceBundle` changes.** Add loading state:
+```ts
+if (!run) return <div className="p-12 text-center text-muted-foreground">Loading…</div>;
+```
 
 ### `/history` — History Page
 
@@ -776,52 +893,52 @@ Loading state (currently missing from mock): add a check for `if (!run) return <
 + import useSWR from "swr";
 + import { api } from "@/lib/api";
 
-+ const { data: runs = [] } = useSWR("runs/recent", () => api.runs.recent());
++ const { data: runs = [] } = useSWR("runs/recent", api.runs.recent);
 ```
 
 ---
 
 ## 8. Real-Time Run Progress
 
-When "Run All" or "Run now" fires, the frontend has a `run_id` and needs to know when steps complete. The existing animated step loop is perfect — just feed it real data.
+When "Run All" or "Run now" fires, the frontend has a `run_id` and needs to know when steps complete.
 
 ### Option A: Poll (ship now, ~1 hour)
 
-`GET /api/runs/{id}` returns the current `run.steps` from `run_steps_log`. The orchestrator writes step updates to `run_steps_log` as it executes. Frontend polls every 2s.
+`GET /api/runs/{id}` returns the current `run.steps` from `run_steps_log`. The orchestrator writes step updates to `run_steps_log` as it executes.
 
-**Orchestrator change** (in `execute_watch`): after each `spawn_handler` resolves, write a step entry:
+**Orchestrator change** (in `orchestrator.py`) — add step-writing after each target completes:
 
 ```python
-# In orchestrator.py, inside the spawn_handler:
-async def spawn_handler(tool_input):
-    result = await self.execute_browser_use_task(task)
-    # Write step update to DB
-    await self._append_run_step(run_id, {
-        "name": task.target_name,
-        "status": "done",
-        "timestamp": datetime.utcnow().isoformat(),
-    })
-    return result
-
+# In orchestrator.py, after each target task resolves:
 async def _append_run_step(self, run_id: str, step: dict):
+    from app.db import get_supabase
+    db = get_supabase()
     run = await self.watch_service.get_run(run_id)
-    steps = run.get("run_steps_log") or []
+    steps = (run or {}).get("run_steps_log") or []
     steps.append(step)
-    self.db.table("watch_runs").update({"run_steps_log": steps}).eq("id", run_id).execute()
+    await asyncio.to_thread(
+        lambda: db.table("watch_runs").update({"run_steps_log": steps}).eq("id", run_id).execute()
+    )
 ```
 
-`serialize_run` reads `run_steps_log` before `agent_thoughts` for steps (more real-time).
+Call it after each browser-use task completes:
+```python
+await self._append_run_step(run_id, {
+    "name": target.get("name", "Capturing"),
+    "status": "done",
+    "timestamp": datetime.utcnow().isoformat(),
+})
+```
 
-Frontend poll:
+Frontend poll (already shown in §7 Dashboard `runAll`):
 ```ts
-// In dashboard runAll handler
 const poll = setInterval(async () => {
   const run = await api.runs.get(run_id);
-  setCurrentRunSteps(run.steps);   // run.steps comes from run_steps_log
+  setCurrentRunSteps(run.steps);
   if (run.endedAt !== run.startedAt) {
     clearInterval(poll);
     setIsRunning(false);
-    mutate("changes");
+    mutateChanges();
   }
 }, 2000);
 ```
@@ -832,11 +949,13 @@ Add to `routes.py`:
 
 ```python
 from fastapi.responses import StreamingResponse
+import json
 
 @router.get("/runs/{run_id}/stream")
 async def run_stream(run_id: str):
     async def events():
         while True:
+            svc = WatchService()
             run = await svc.get_run(run_id)
             steps = run.get("run_steps_log") or []
             yield f"data: {json.dumps({'steps': steps, 'status': run['status']})}\n\n"
@@ -849,6 +968,8 @@ async def run_stream(run_id: str):
 
 Frontend hook (replaces poll):
 ```ts
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 function useRunStream(runId: string | null, onUpdate: (steps: RunStep[]) => void) {
   useEffect(() => {
     if (!runId) return;
@@ -867,154 +988,28 @@ function useRunStream(runId: string | null, onUpdate: (steps: RunStep[]) => void
 
 ## 9. AI Onboarding Flow
 
-This is the **"wow" feature** from `ai_workflow.md`. User pastes their product URL, Claude identifies every compliance risk, and watches are auto-created. The frontend already has `CommandBar` with a placeholder button — wire it up.
+The **"wow" feature**. User pastes their product URL, the AI identifies every compliance risk, and watches are auto-created.
 
-### Backend: `backend/app/services/onboarding_service.py` (new file)
+### Backend: Already Implemented
 
-Three stages:
+The onboarding pipeline already fully exists:
+- **`backend/app/services/product_analyzer.py`** — `ProductAnalyzer` class handles all three stages: scraping (BrowserUse), risk analysis (Claude), and watch creation
+- **`POST /api/analyze-product`** — queues the job, returns `job_id` immediately
+- **`GET /api/analyze-product/{job_id}`** — polls job status
 
-**Stage 1 — Scrape product page:**
-One BrowserUse task. Extract product description, feature list, data handling practices, any compliance mentions.
+**Do not create a new `onboarding_service.py`** — that logic is already in `ProductAnalyzer`.
 
-```python
-async def scrape_product_page(url: str) -> str:
-    from browser_use import Agent, Browser, ChatBrowserUse
-    browser = Browser(headless=True, use_cloud=bool(config.get("browser_use_api_key")))
-    agent = Agent(
-        task=f"""Go to {url}.
-Extract comprehensively:
-1. What the product does (core functionality)
-2. What user data it collects or processes
-3. Who the target customers are (B2B, B2C, healthcare, finance, etc.)
-4. Any integrations or third-party services mentioned
-5. Any existing compliance mentions (GDPR, HIPAA, SOC2, etc.)
+The only backend addition needed: the job response should include serialized `watches` in the camelCase `Watch[]` shape. Update `_run_analysis_background` in `routes.py`:
 
-Use the save_content action with everything you find.""",
-        llm=ChatBrowserUse(),
-        browser=browser,
-    )
-    history = await agent.run()
-    return history.final_result() or ""
-```
-
-**Stage 2 — Claude risk analysis:**
-
-```python
-async def analyze_compliance_risks(product_description: str) -> list[dict]:
-    client = Anthropic(api_key=config["anthropic_api_key"])
-    response = client.messages.create(
-        model=config.get("claude_model", "claude-sonnet-4-20250514"),
-        max_tokens=8192,
-        system="""You are a world-class compliance attorney specializing in regulatory technology.
-You identify microscopic compliance risks — not just the obvious ones that every company knows about,
-but the specific, nuanced regulatory exposures based on exactly what the product does.
-Return only valid JSON, no markdown.""",
-        messages=[{"role": "user", "content": f"""Analyze this product for ALL compliance risks.
-
-Product description:
-{product_description}
-
-For each risk, return a JSON object:
-{{
-  "regulation_title": "GDPR Article 22 – Automated Decision-Making",
-  "why_its_a_risk": "The product uses ML to automatically approve/reject users without human review, triggering Article 22 rights.",
-  "jurisdiction": "EU",
-  "source_type": "regulator",
-  "source_url": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679",
-  "current_state": "Article 22 prohibits solely automated decisions that significantly affect individuals, with exceptions for contract necessity, explicit consent, or EU/Member State law.",
-  "impact_level": "high",
-  "check_interval": 604800,
-  "targets": [{{
-    "name": "GDPR Article 22",
-    "starting_url": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679",
-    "extraction_instructions": "Extract the full text of Article 22 and any recitals referencing automated decision-making."
-  }}]
-}}
-
-Return a JSON array of all risks. Be thorough — find 10-20 risks including vendor obligations, state-level laws, sector-specific regulations, and international requirements."""}],
-    )
-    text = response.content[0].text
-    return json.loads(text)  # parse the array
-```
-
-**Stage 3 — Bulk watch creation + bootstrap snapshots:**
-
-```python
-async def create_watches_from_risks(risks: list[dict], org_id: str) -> list[dict]:
-    created = []
-    for risk in risks:
-        watch = await watch_service.create_watch(
-            organization_id=org_id,
-            name=risk["regulation_title"],
-            description=risk["why_its_a_risk"],
-            config={
-                "jurisdictions": [risk["jurisdiction"]],
-                "sources": [risk.get("source_url", "")],
-                "source_type": risk["source_type"],
-                "targets": risk.get("targets", []),
-                "initial_state": risk.get("current_state"),  # bootstrap; written as first snapshot
-            },
-        )
-        # Write initial snapshot so first real run can diff against it
-        if risk.get("current_state"):
-            import hashlib
-            content = risk["current_state"]
-            await watch_service.save_snapshot(
-                watch_id=str(watch["id"]),
-                run_id="bootstrap",
-                target_name=risk["regulation_title"],
-                url=risk.get("source_url", ""),
-                content_text=content,
-                content_hash=hashlib.sha256(content.encode()).hexdigest(),
-            )
-        created.append(watch)
-    return created
-```
-
-**Routes:**
-
-```python
-import uuid
-
-_onboard_jobs: dict = {}  # in-memory for hackathon; use Redis/Supabase in prod
-
-@router.post("/onboard")
-async def onboard_product(body: dict, background_tasks: BackgroundTasks):
-    product_url = body.get("product_url")
-    if not product_url:
-        raise HTTPException(400, "product_url required")
-    job_id = str(uuid.uuid4())
-    _onboard_jobs[job_id] = {"status": "processing", "stage": "scraping"}
-    background_tasks.add_task(_run_onboarding, job_id, product_url)
-    return {"job_id": job_id, "status": "processing"}
-
-@router.get("/onboard/{job_id}")
-async def get_onboard_status(job_id: str):
-    job = _onboard_jobs.get(job_id)
-    if not job:
-        raise HTTPException(404)
-    return job
-
-async def _run_onboarding(job_id: str, product_url: str):
-    try:
-        _onboard_jobs[job_id]["stage"] = "scraping"
-        description = await scrape_product_page(product_url)
-
-        _onboard_jobs[job_id]["stage"] = "analyzing"
-        risks = await analyze_compliance_risks(description)
-        _onboard_jobs[job_id]["risks"] = risks  # frontend can show preview
-
-        _onboard_jobs[job_id]["stage"] = "creating_watches"
-        watches = await create_watches_from_risks(risks, DEFAULT_ORG_ID)
-
-        _onboard_jobs[job_id] = {
-            "status": "completed",
-            "stage": "done",
-            "risks": risks,
-            "watches_created": [serialize_watch(w) for w in watches],
-        }
-    except Exception as e:
-        _onboard_jobs[job_id] = {"status": "failed", "error": str(e)}
+```diff
+# In routes.py _run_analysis_background:
++ from app.serializers import serialize_watch
+  _analysis_jobs[job_id].update({
+      "status": "completed",
+      ...
+-     "watches": [_watch_to_response(w) for w in result["watches"]],
++     "watches": [serialize_watch(w) for w in result["watches"]],
+  })
 ```
 
 ### Frontend: Onboarding Modal
@@ -1031,34 +1026,27 @@ Add to `CommandBar` — that button is already there. Wire it to open a modal:
 └─────────────────────────────────────────────────────┘
 ```
 
-Loading state (poll `GET /api/onboard/{job_id}` every 2s):
+Loading state (poll `GET /api/analyze-product/{job_id}` every 2s via `api.onboard.status(jobId)`):
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Analyzing yourapp.com...                            │
 │                                                      │
-│  ✓ Scraping product page                            │
-│  ⟳ Identifying regulations...    (14 found so far)  │
+│  ⟳ Running analysis...                              │
 │  ○ Creating watches                                  │
 └─────────────────────────────────────────────────────┘
 ```
 
-Review state (before committing):
+Completed state — `status.watches` contains the created `Watch[]`:
 ```
 ┌─────────────────────────────────────────────────────┐
 │  14 compliance risks identified                      │
+│  14 watches created                                  │
 │                                                      │
-│  ● HIGH   GDPR Article 22 – Auto Decisions    [EU]  │
-│  ● HIGH   HIPAA PHI Tracking                  [US]  │
-│  ● MED    CCPA Right-to-Delete                [US-CA]│
-│  ● MED    Stripe Acceptable Use               [US]  │
-│  ● LOW    WCAG 2.1 Accessibility              [US]  │
-│  ...                                                 │
-│                                                      │
-│  [Create all 14 watches]    [Cancel]                 │
+│  [Go to Watches →]                                   │
 └─────────────────────────────────────────────────────┘
 ```
 
-On "Create all 14 watches": call `api.watches.create()` for each (they're already created by the backend, so just `mutate("watches")` to refresh the list). Or the backend creates them immediately; the frontend just navigates to `/watches`.
+On completion: call `mutate("watches")` to refresh the watches list, then navigate to `/watches`.
 
 ---
 
@@ -1067,11 +1055,11 @@ On "Create all 14 watches": call `api.watches.create()` for each (they're alread
 Each phase is independently deployable and testable.
 
 ### Phase 1 — Backend serializers (3-4 hours)
-1. Create `backend/app/serializers.py` with all serializers above
-2. Run DB migration: add `agent_summary`, `agent_thoughts` columns from ai-shit branch
-3. Update `_watch_to_response` in routes.py to call `serialize_watch()`
-4. Test `GET /api/watches` returns `Watch[]` shape exactly
-5. Add `GET /api/globe-points` → `serialize_globe_points()`
+1. Create `backend/app/serializers.py` with all serializers from §3
+2. Run DB migration: add `run_steps_log` to `watch_runs`; add ticket URL columns to `changes` and `evidence_bundles`; add `next_run_at` to `watches`
+3. Update `list_watches` and `get_watch` in routes.py to call `serialize_watch()`
+4. Add `GET /api/globe-points` → `serialize_globe_points()`
+5. Test `GET /api/watches` returns `Watch[]` shape exactly
 
 ### Phase 2 — New read endpoints (2-3 hours)
 6. Add `GET /api/changes` → `ChangeEvent[]` shape
@@ -1082,31 +1070,31 @@ Each phase is independently deployable and testable.
 
 ### Phase 3 — Frontend wiring, read-only (2-3 hours)
 11. Add `frontend/.env.local` + install `swr`
-12. Create `src/lib/api.ts`
-13. Wire `/watches` page — replace mock, verify real data renders
-14. Wire `/watches/[id]` page
-15. Wire `/history` page
-16. Wire `/app` dashboard (watches card, changes card, globe)
+12. Replace `src/lib/api.ts` with the new typed client from §6a
+13. Add `watches` prop to `WatchesCard` (§6d)
+14. Wire `/watches` page — replace mock, verify real data renders
+15. Wire `/watches/[id]` page
+16. Wire `/history` page
+17. Wire `/app` dashboard (watches card, changes card, globe)
 
-### Phase 4 — Run detail (2 hours)
-17. Wire `/app/run/[id]` — replace `getRunById` with `useSWR`
-18. Add loading state for when run is `null`
-19. Verify `RunTimeline`, `DiffViewer`, `EvidenceBundle` all render correctly with real data
+### Phase 4 — Run detail (1-2 hours)
+18. Wire `/app/run/[id]` — replace `getRunById` with `useSWR`
+19. Add loading state for when `run` is `null`
+20. Verify `RunTimeline`, `DiffViewer`, `EvidenceBundle` all render correctly with real data
 
 ### Phase 5 — Live run triggering (2-3 hours)
-20. DB migration: add `run_steps_log` column to `watch_runs`
-21. Add step-writing to orchestrator `spawn_handler`
-22. Update `POST /api/watches/{id}/run` to return `run_id`
+21. Add step-writing to orchestrator (§8 Option A)
+22. Update `POST /api/watches/{id}/run` to return `run_id` (§4h)
 23. Replace fake animation in Dashboard `runAll` with real poll loop
 24. Add "Run now" button wiring on `/watches/[id]`
 
-### Phase 6 — Onboarding (1 day)
-25. Create `backend/app/services/onboarding_service.py`
-26. Add `POST /api/onboard` + `GET /api/onboard/{job_id}` routes
-27. Add onboarding modal component to frontend
-28. Wire `CommandBar` "Analyze product" button to open modal
+### Phase 6 — Onboarding wiring (1-2 hours)
+25. Update `_run_analysis_background` to use `serialize_watch()` for the `watches` field
+26. Add onboarding modal component to frontend
+27. Wire `CommandBar` "Analyze product" button to open modal
+28. Poll `GET /api/analyze-product/{job_id}` for progress, navigate to `/watches` on completion
 
 ### Phase 7 — Polish + SSE (optional, ½ day)
-29. Replace poll with SSE stream endpoint
+29. Replace poll with SSE stream endpoint (§8 Option B)
 30. Add `useRunStream` hook
 31. Handle error states (run failed, watch not found, API down)

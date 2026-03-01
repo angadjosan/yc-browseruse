@@ -20,5 +20,8 @@ browser-use>=0.1.0
 # Scheduler
 apscheduler>=3.10.0
 
+# Redis
+redis[hiredis]>=5.0.0
+
 # Utils
 python-dotenv>=1.0.0

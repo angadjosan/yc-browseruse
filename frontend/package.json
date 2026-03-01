@@ -16,6 +16,7 @@
     "react": "^18",
     "react-dom": "^18",
     "react-globe.gl": "^2.37.0",
+    "swr": "^2.4.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

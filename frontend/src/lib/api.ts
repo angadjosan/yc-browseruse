@@ -1,128 +1,127 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import type { Watch, ChangeEvent, Run, GlobePoint } from "./types";
 
-export type Watch = {
-  id: string;
-  name: string;
-  description: string | null;
-  status: string;
-  next_run_at: string | null;
-  total_runs: number;
-  total_changes: number;
-  config?: Record<string, unknown>;
-  schedule?: Record<string, unknown>;
-  created_at?: string;
-  last_run_at?: string | null;
-};
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type AgentThought = Record<string, unknown>;
-
-export type WatchRun = {
-  id: string;
-  watch_id: string;
-  status: string;
-  started_at: string;
-  completed_at: string | null;
-  duration_ms: number | null;
-  tasks_executed: number;
-  tasks_failed: number;
-  changes_detected: number;
-  error_message: string | null;
-  /** Short summary of agent reasoning (from browser-use model_thoughts) */
-  agent_summary?: string | null;
-  /** Full agent reasoning per target */
-  agent_thoughts?: Array<{ target_name: string; thoughts: AgentThought[] }> | null;
-};
-
-export type EvidenceBundle = {
-  id: string;
-  run_id?: string;
-  change_id?: string;
-  impact_memo?: string;
-  diff_summary?: string;
-  screenshots?: Array<{ type: string; url: string }>;
-  content_hash?: string;
-  audit_metadata?: Record<string, unknown>;
-  s3_urls?: Record<string, string>;
-};
-
-export async function listWatches(): Promise<Watch[]> {
-  const r = await fetch(`${API_URL}/api/watches`);
-  if (!r.ok) throw new Error("Failed to fetch watches");
-  return r.json();
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
 }
 
-export async function getWatch(id: string): Promise<Watch> {
-  const r = await fetch(`${API_URL}/api/watches/${id}`);
-  if (!r.ok) throw new Error("Failed to fetch watch");
-  return r.json();
-}
-
-export async function createWatch(body: {
-  name: string;
-  description?: string;
-  type?: string;
-  config?: Record<string, unknown>;
-  integrations?: Record<string, unknown>;
-}): Promise<Watch> {
-  const r = await fetch(`${API_URL}/api/watches`, {
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error("Failed to create watch");
-  return r.json();
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
 }
 
-export async function runWatch(watchId: string): Promise<{ status: string; watch_id: string; message: string }> {
-  const r = await fetch(`${API_URL}/api/watches/${watchId}/run`, { method: "POST" });
-  if (!r.ok) throw new Error("Failed to run watch");
-  return r.json();
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
 }
 
-export async function getWatchHistory(
-  watchId: string,
-  limit?: number,
-  offset?: number
-): Promise<{ watch_id: string; runs: WatchRun[]; total: number }> {
-  const params = new URLSearchParams();
-  if (limit != null) params.set("limit", String(limit));
-  if (offset != null) params.set("offset", String(offset));
-  const q = params.toString();
-  const url = `${API_URL}/api/watches/${watchId}/history${q ? `?${q}` : ""}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error("Failed to fetch history");
-  return r.json();
-}
+export const api = {
+  watches: {
+    list: (): Promise<Watch[]> =>
+      get<Watch[]>("/api/watches"),
+    get: (id: string): Promise<Watch> =>
+      get<Watch>(`/api/watches/${id}`),
+    create: (body: CreateWatchBody): Promise<Watch> =>
+      post<Watch>("/api/watches", body),
+    update: (id: string, body: Partial<Pick<Watch, "name" | "description"> & { schedule?: { cron: string }; integrations?: Record<string, string> }>): Promise<Watch> =>
+      patch<Watch>(`/api/watches/${id}`, body),
+    delete: (id: string): Promise<{ status: string }> =>
+      del<{ status: string }>(`/api/watches/${id}`),
+    run: (id: string): Promise<{ run_id: string; watch_id: string; status: string }> =>
+      post(`/api/watches/${id}/run`),
+    runs: (id: string): Promise<Run[]> =>
+      get<{ runs: Run[] }>(`/api/watches/${id}/runs`).then((r) => r.runs),
+    changes: (id: string): Promise<ChangeEvent[]> =>
+      get<{ changes: ChangeEvent[] }>(`/api/watches/${id}/changes`).then((r) => r.changes),
+  },
+  runs: {
+    recent: (): Promise<Run[]> =>
+      get<{ runs: Run[] }>("/api/runs/recent").then((r) => r.runs),
+    get: (id: string): Promise<Run> =>
+      get<Run>(`/api/runs/${id}`),
+  },
+  changes: {
+    list: (limit = 50): Promise<ChangeEvent[]> =>
+      get<{ changes: ChangeEvent[] }>(`/api/changes?limit=${limit}`).then((r) => r.changes),
+  },
+  globe: {
+    points: (): Promise<GlobePoint[]> =>
+      get<{ points: GlobePoint[] }>("/api/globe-points").then((r) => r.points),
+  },
+  onboard: {
+    start: (productUrl: string): Promise<{ job_id: string }> =>
+      post("/api/analyze-product", { product_url: productUrl }),
+    status: (jobId: string): Promise<OnboardStatus> =>
+      get<OnboardStatus>(`/api/analyze-product/${jobId}`),
+  },
+};
 
-export async function getEvidenceBundle(bundleId: string): Promise<EvidenceBundle> {
-  const r = await fetch(`${API_URL}/api/evidence/${bundleId}`);
-  if (!r.ok) throw new Error("Evidence bundle not found");
-  return r.json();
-}
+export type CreateWatchBody = {
+  name: string;
+  description?: string;
+  type?: string;
+  config: {
+    targets: Array<{
+      name: string;
+      starting_url?: string;
+      search_query?: string;
+      extraction_instructions: string;
+    }>;
+  };
+  integrations?: {
+    slack_channel?: string;
+    linear_team_id?: string;
+  };
+  schedule?: {
+    cron: string;
+  };
+};
 
-export async function listEvidenceBundles(limit?: number, offset?: number): Promise<EvidenceBundle[]> {
-  const params = new URLSearchParams();
-  if (limit != null) params.set("limit", String(limit));
-  if (offset != null) params.set("offset", String(offset));
-  const q = params.toString();
-  const r = await fetch(`${API_URL}/api/evidence${q ? `?${q}` : ""}`);
-  if (!r.ok) throw new Error("Failed to fetch evidence bundles");
-  const data = await r.json();
-  return data.bundles ?? [];
-}
+export type OnboardRiskRaw = {
+  regulation_title: string;
+  risk_rationale: string;
+  jurisdiction: string;
+  scope: string;
+  source_url: string;
+  check_interval_seconds: number;
+};
 
-export type RecentRun = WatchRun & { watch_name?: string };
+export type OnboardLog = {
+  t: number;
+  msg: string;
+};
 
-export async function getRun(runId: string): Promise<WatchRun & { watch_name?: string }> {
-  const r = await fetch(`${API_URL}/api/runs/${runId}`);
-  if (!r.ok) throw new Error("Run not found");
-  return r.json();
-}
-
-export async function getRecentRuns(limit?: number): Promise<RecentRun[]> {
-  const params = limit != null ? `?limit=${limit}` : "";
-  const r = await fetch(`${API_URL}/api/runs/recent${params}`);
-  if (!r.ok) throw new Error("Failed to fetch runs");
-  const data = await r.json();
-  return data.runs ?? [];
-}
+export type OnboardStatus = {
+  job_id?: string;
+  status: "pending" | "running" | "completed" | "failed";
+  product_url?: string;
+  risks_identified?: number;
+  watches_created?: number;
+  watches?: Watch[];
+  risks?: OnboardRiskRaw[];
+  logs?: OnboardLog[];
+  product_info?: {
+    content_preview: string;
+    url: string;
+  };
+  error?: string;
+};

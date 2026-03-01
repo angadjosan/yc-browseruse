@@ -1,18 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { runs } from "@/lib/mockData";
+import useSWR from "swr";
+import { api } from "@/lib/api";
 
 export default function HistoryPage() {
+  const { data: runs = [], isLoading } = useSWR("runs/recent", api.runs.recent, {
+    refreshInterval: 15_000,
+  });
+
   return (
     <div className="p-6 md:p-8">
       <h1 className="text-2xl font-bold text-foreground">Run history</h1>
       <p className="mt-1 text-muted-foreground">
-        Recent watch runs across all watches. (Mock data — no backend.)
+        Recent watch runs across all watches.
       </p>
 
       <div className="mt-8 space-y-2">
-        {runs.length === 0 ? (
+        {isLoading ? (
+          <div className="rounded-xl border border-border bg-card/80 p-8 text-center text-muted-foreground">
+            Loading runs…
+          </div>
+        ) : runs.length === 0 ? (
           <div className="rounded-xl border border-border bg-card/80 p-8 text-center text-muted-foreground">
             No runs yet. Use the Dashboard to &quot;Run all&quot; and see runs here.
           </div>

@@ -6,14 +6,14 @@ import { usePathname } from "next/navigation";
 const nav = [
   { href: "/app", label: "Dashboard" },
   { href: "/watches", label: "Watches" },
-  { href: "/history", label: "History" },
+  { href: "/alerts", label: "Alerts" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isLanding = pathname === "/";
+  const isFullscreen = pathname === "/" || pathname === "/analyze";
 
-  if (isLanding) {
+  if (isFullscreen) {
     return <>{children}</>;
   }
 

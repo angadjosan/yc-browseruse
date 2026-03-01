@@ -144,9 +144,17 @@ class ProductAnalyzer:
 
         # Step 1: Extract product information using browser-use
         log("─── STEP 1: Scraping product page ───")
-        product_info = await self.extract_product_info(product_url)
+        try:
+            product_info = await self.extract_product_info(product_url)
+        except Exception as e:
+            log(f"Browser agent failed ({e}) — falling back to HTTP scrape")
+            product_info = None
         if not product_info or not product_info.get("content"):
-            raise ValueError("Failed to extract product information from URL")
+            log("Browser agent returned empty content — falling back to HTTP scrape")
+            fallback_content = await self._http_scrape(product_url, log)
+            if not fallback_content:
+                raise ValueError("Failed to extract product information from URL")
+            product_info = {"content": fallback_content, "url": product_url}
 
         content = product_info["content"]
         log(f"Extraction complete — {len(content)} characters scraped")
@@ -209,12 +217,7 @@ Search for additional information online if needed to get a complete picture.
 Use the save_product_info action to save your findings."""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
-        log(f"Launching browser agent (cloud={use_cloud}) → {product_url}")
-        log(f"Max steps: 10, timeout: 300s")
-        log(f"─── BU agent task prompt ───")
-        for line in task_prompt.strip().split("\n"):
-            log(f"  > {line}")
-        log(f"─── End task prompt ───")
+        log(f"Launching browser agent → {product_url}")
         browser = Browser(headless=True, use_cloud=use_cloud)
         llm = ChatBrowserUse()
 
@@ -230,7 +233,6 @@ Use the save_product_info action to save your findings."""
             log("Agent running...")
             history = await asyncio.wait_for(agent.run(max_steps=10), timeout=300.0)
             log("Agent finished — extracting results")
-            _extract_history_steps(history, log)
         except asyncio.TimeoutError:
             raise RuntimeError("Browser agent timed out extracting product info")
         finally:
@@ -240,6 +242,30 @@ Use the save_product_info action to save your findings."""
                 pass
 
         content = extracted_data.get("content", "")
+
+        # Fallback 1: pull text from agent history if save_product_info was never called
+        if not content:
+            log("Agent did not call save_product_info — trying history fallback")
+            try:
+                fr = history.final_result()
+                if fr and str(fr).strip():
+                    content = str(fr).strip()
+                    log(f"  Got {len(content)} chars from history.final_result()")
+            except Exception:
+                pass
+        if not content:
+            try:
+                chunks = history.extracted_content()
+                if chunks:
+                    content = "\n".join(str(c) for c in chunks if str(c).strip())
+                    log(f"  Got {len(content)} chars from history.extracted_content()")
+            except Exception:
+                pass
+
+        # Fallback 2: plain HTTP scrape
+        if not content:
+            log("History fallback empty — falling back to plain HTTP scrape")
+            content = await self._http_scrape(product_url, log)
 
         # Extract final URL
         url = product_url
@@ -326,12 +352,6 @@ Format:
 ]
 
 Be thorough - aim for 10-20 risks minimum, including both major and minor regulatory exposures. Output ONLY the JSON array."""
-
-        # Log the full prompt being sent to Claude
-        log(f"─── Claude prompt ({len(prompt)} chars) ───")
-        for line in prompt.split("\n"):
-            log(f"  > {line}")
-        log("─── End prompt ───")
 
         try:
             system = (
@@ -435,11 +455,6 @@ Steps:
 
 Extract ALL relevant regulatory language."""
 
-        log(f"  ─── BU regulation scraper task prompt ───")
-        for line in task_prompt.strip().split("\n"):
-            log(f"    > {line}")
-        log(f"  ─── End task prompt ───")
-
         use_cloud = bool(self.config.get("browser_use_api_key"))
         browser = Browser(headless=True, use_cloud=use_cloud)
         llm = ChatBrowserUse()
@@ -456,7 +471,6 @@ Extract ALL relevant regulatory language."""
             log(f"  Launching regulation scraper agent (max_steps=25)")
             history = await asyncio.wait_for(agent.run(max_steps=25), timeout=180.0)
             log(f"  Regulation scraper finished")
-            _extract_history_steps(history, lambda msg: log(f"  {msg}"))
         except asyncio.TimeoutError:
             logger.warning(f"Timed out fetching regulation state for {risk.get('regulation_title')}")
             return ""
@@ -467,7 +481,55 @@ Extract ALL relevant regulatory language."""
                 pass
 
         content = extracted_data.get("content", "")
+
+        # Fallback: pull text from agent history if save action was never called
+        if not content:
+            try:
+                fr = history.final_result()
+                if fr and str(fr).strip():
+                    content = str(fr).strip()
+            except Exception:
+                pass
+        if not content:
+            try:
+                chunks = history.extracted_content()
+                if chunks:
+                    content = "\n".join(str(c) for c in chunks if str(c).strip())
+            except Exception:
+                pass
+
         return content.strip()
+
+    async def _http_scrape(self, url: str, log: LogFn) -> str:
+        """Plain HTTP GET + basic text extraction, no browser required."""
+        try:
+            import urllib.request
+            import html
+            import re
+
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; ComplianceRadar/1.0)"},
+            )
+            loop = asyncio.get_event_loop()
+            response_bytes = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=30).read()),
+                timeout=35.0,
+            )
+            raw = response_bytes.decode("utf-8", errors="replace")
+            # Strip scripts/styles/tags
+            raw = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", " ", raw, flags=re.DOTALL | re.IGNORECASE)
+            raw = re.sub(r"<[^>]+>", " ", raw)
+            raw = html.unescape(raw)
+            # Collapse whitespace
+            text = re.sub(r"[ \t]+", " ", raw)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            text = text.strip()
+            log(f"HTTP scrape yielded {len(text)} chars")
+            return text[:12000]
+        except Exception as e:
+            log(f"HTTP scrape failed: {e}")
+            return ""
 
     async def create_watches_from_risks(
         self,

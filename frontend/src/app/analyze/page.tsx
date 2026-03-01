@@ -3,10 +3,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { OnboardStatus, OnboardRiskRaw } from "@/lib/api";
+import type { OnboardStatus, OnboardRiskRaw, OnboardLog } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import {
   Loader2,
   CheckCircle,
+  Check,
   AlertCircle,
   Globe,
   Clock,
@@ -15,6 +17,41 @@ import {
   Radar,
   ArrowLeft,
 } from "lucide-react";
+
+const STEPS = [
+  "Scraping product page",
+  "Analyzing compliance risks",
+  "Creating monitors",
+] as const;
+
+function getCurrentStep(logs: OnboardLog[]): 1 | 2 | 3 {
+  const msgs = logs.map((l) => l.msg);
+  if (msgs.some((m) => m.includes("STEP 3"))) return 3;
+  if (msgs.some((m) => m.includes("STEP 2"))) return 2;
+  return 1;
+}
+
+function getDisplayLogs(logs: OnboardLog[]): string[] {
+  return logs
+    .filter((l) => {
+      const m = l.msg;
+      // Skip raw content dump lines and agent micro-steps
+      if (m.startsWith("    |")) return false;
+      if (/^\s+\[\d+\]/.test(m)) return false;
+      if (m.startsWith("    Rationale:")) return false;
+      if (/^\s+Risk \d+\/\d+:/.test(m)) return false;
+      return true;
+    })
+    .slice(-12)
+    .map((l) => {
+      // Clean up step headers
+      const m = l.msg.trim();
+      if (m.startsWith("───") || m.endsWith("───")) {
+        return m.replace(/─+/g, "").trim();
+      }
+      return m;
+    });
+}
 
 type FlowState = "input" | "analyzing" | "done" | "error";
 
@@ -33,7 +70,6 @@ export default function AnalyzePage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<OnboardStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   // Poll job status
   useEffect(() => {
@@ -60,11 +96,6 @@ export default function AnalyzePage() {
     };
   }, [jobId, flowState]);
 
-  // Auto-scroll logs
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [jobStatus?.logs?.length]);
-
   const handleAnalyze = async () => {
     if (!productUrl.trim()) return;
     setFlowState("analyzing");
@@ -85,7 +116,6 @@ export default function AnalyzePage() {
     setJobStatus(null);
   };
 
-  const logs = jobStatus?.logs ?? [];
   const risks: OnboardRiskRaw[] = jobStatus?.risks ?? [];
 
   return (
@@ -156,76 +186,127 @@ export default function AnalyzePage() {
         )}
 
         {/* ─── ANALYZING ─── */}
-        {flowState === "analyzing" && (
-          <div className="w-full max-w-4xl flex flex-col gap-4 flex-1">
-            <div className="flex items-center gap-3">
-              <Loader2 className="h-5 w-5 animate-spin text-primary" />
-              <h2 className="text-lg font-semibold text-foreground">
-                Analyzing {productUrl}
-              </h2>
-            </div>
+        {flowState === "analyzing" && (() => {
+          const logs = jobStatus?.logs ?? [];
+          const currentStep = getCurrentStep(logs);
+          const displayLogs = getDisplayLogs(logs);
+          return (
+            <div className="w-full max-w-2xl flex flex-col gap-4">
+              {/* Header */}
+              <div className="flex items-start gap-3">
+                <Loader2 className="h-5 w-5 animate-spin text-primary mt-0.5 shrink-0" />
+                <div>
+                  <h2 className="text-lg font-semibold text-foreground leading-tight">
+                    Analyzing {productUrl}
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    This typically takes 2–3 minutes
+                  </p>
+                </div>
+              </div>
 
-            {/* Risks as they come in */}
-            {risks.length > 0 && (
+              {/* Step progress */}
               <div className="rounded-xl border border-border bg-card/80 p-4 backdrop-blur-sm">
-                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-                  {risks.length} risks identified
-                  {jobStatus?.watches_created
-                    ? ` — ${jobStatus.watches_created} watches created`
-                    : " — creating watches..."}
-                </p>
-                <div className="space-y-1.5 max-h-48 overflow-auto">
-                  {risks.map((r, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-3 py-2"
-                    >
-                      <span className="text-sm text-foreground truncate">
-                        {r.regulation_title}
-                      </span>
-                      <div className="flex items-center gap-1.5 shrink-0">
+                <div className="space-y-1">
+                  {STEPS.map((label, i) => {
+                    const stepNum = (i + 1) as 1 | 2 | 3;
+                    const done = currentStep > stepNum;
+                    const active = currentStep === stepNum;
+                    return (
+                      <div key={label} className="flex items-center gap-3 py-1.5">
+                        <div
+                          className={cn(
+                            "h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 transition-colors",
+                            done
+                              ? "bg-primary text-primary-foreground"
+                              : active
+                              ? "bg-primary/15 text-primary border border-primary"
+                              : "bg-muted text-muted-foreground"
+                          )}
+                        >
+                          {done ? <Check className="h-3.5 w-3.5" /> : stepNum}
+                        </div>
+                        <span
+                          className={cn(
+                            "text-sm flex-1 transition-colors",
+                            done
+                              ? "text-foreground"
+                              : active
+                              ? "text-foreground font-medium"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {label}
+                        </span>
+                        {active && (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+                        )}
+                        {done && (
+                          <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Live activity */}
+              {displayLogs.length > 0 && (
+                <div className="rounded-xl border border-border bg-card/80 p-3 backdrop-blur-sm">
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-2">
+                    Live activity
+                  </p>
+                  <div className="font-mono text-xs space-y-0.5 max-h-36 overflow-auto">
+                    {displayLogs.map((line, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          "flex gap-2",
+                          i === displayLogs.length - 1
+                            ? "text-foreground"
+                            : "text-muted-foreground"
+                        )}
+                      >
+                        <span className="text-primary/50 shrink-0">›</span>
+                        <span className="break-all">{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Risks as they appear */}
+              {risks.length > 0 && (
+                <div className="rounded-xl border border-border bg-card/80 p-4 backdrop-blur-sm">
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-3">
+                    {risks.length} risks identified
+                    {jobStatus?.watches_created
+                      ? ` — ${jobStatus.watches_created} monitors created`
+                      : " — creating monitors…"}
+                  </p>
+                  <div className="space-y-1.5 max-h-60 overflow-auto">
+                    {risks.map((r, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-muted/30 px-3 py-2"
+                      >
+                        <span className="text-sm text-foreground truncate">
+                          {r.regulation_title}
+                        </span>
                         {r.jurisdiction && (
-                          <span className="flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+                          <span className="flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary shrink-0">
                             <Globe className="h-3 w-3" />
                             {r.jurisdiction}
                           </span>
                         )}
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
-
-            {/* Full log output */}
-            <div className="rounded-xl border border-border bg-black/60 backdrop-blur-sm flex-1 min-h-[300px] max-h-[60vh] overflow-auto p-4 font-mono text-xs leading-relaxed">
-              {logs.length === 0 && (
-                <p className="text-muted-foreground animate-pulse">
-                  Waiting for agent output...
-                </p>
               )}
-              {logs.map((log, i) => (
-                <div key={i} className="flex gap-2 py-0.5">
-                  <span className="text-muted-foreground shrink-0 select-none">
-                    {new Date(log.t * 1000).toLocaleTimeString()}
-                  </span>
-                  <span
-                    className={
-                      log.msg.startsWith("───")
-                        ? "text-primary font-semibold"
-                        : log.msg.startsWith("  ")
-                          ? "text-muted-foreground"
-                          : "text-foreground"
-                    }
-                  >
-                    {log.msg}
-                  </span>
-                </div>
-              ))}
-              <div ref={logsEndRef} />
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ─── DONE ─── */}
         {flowState === "done" && jobStatus && (
@@ -293,33 +374,6 @@ export default function AnalyzePage() {
               </div>
             </div>
 
-            {/* Full log output (scrollable) */}
-            <details>
-              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                Full agent logs ({logs.length} entries)
-              </summary>
-              <div className="mt-2 rounded-xl border border-border bg-black/60 backdrop-blur-sm max-h-[40vh] overflow-auto p-4 font-mono text-xs leading-relaxed">
-                {logs.map((log, i) => (
-                  <div key={i} className="flex gap-2 py-0.5">
-                    <span className="text-muted-foreground shrink-0 select-none">
-                      {new Date(log.t * 1000).toLocaleTimeString()}
-                    </span>
-                    <span
-                      className={
-                        log.msg.startsWith("───")
-                          ? "text-primary font-semibold"
-                          : log.msg.startsWith("  ")
-                            ? "text-muted-foreground"
-                            : "text-foreground"
-                      }
-                    >
-                      {log.msg}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </details>
-
             <button
               onClick={() => router.push("/watches")}
               className="w-full rounded-lg bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
@@ -342,19 +396,6 @@ export default function AnalyzePage() {
               <p className="text-sm text-muted-foreground mb-4">
                 {jobStatus?.error ?? "Something went wrong. Please try again."}
               </p>
-
-              {logs.length > 0 && (
-                <div className="rounded-xl border border-border bg-black/60 max-h-[40vh] overflow-auto p-4 font-mono text-xs leading-relaxed mb-4">
-                  {logs.map((log, i) => (
-                    <div key={i} className="flex gap-2 py-0.5">
-                      <span className="text-muted-foreground shrink-0 select-none">
-                        {new Date(log.t * 1000).toLocaleTimeString()}
-                      </span>
-                      <span className="text-foreground">{log.msg}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
 
               <div className="flex gap-2">
                 <button

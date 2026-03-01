@@ -1,19 +1,21 @@
 """Generates and stores audit-ready evidence bundles (impact memo, diff, screenshots).
 
-AI usage locked to compliance.md / TECHNICAL_DESIGN.md: impact memos are generated
-via Anthropic Claude with a fixed prompt structure (What Changed, Why It Matters,
-Immediate Actions Required, Timeline) for judge-friendly, audit-ready output.
+Impact memos are generated via Anthropic Claude with a fixed prompt structure
+(What Changed, Why It Matters, Immediate Actions Required, Timeline) for
+judge-friendly, audit-ready output.
 """
 import hashlib
 import hmac
 import json
-import os
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import get_config
 from app.db import get_supabase
+
+logger = logging.getLogger(__name__)
 
 
 class EvidenceService:
@@ -31,9 +33,6 @@ class EvidenceService:
     def _sign_evidence(self, content: str, metadata: dict) -> str:
         message = f"{content}|{json.dumps(metadata, sort_keys=True)}"
         return hmac.new(self._secret, message.encode(), hashlib.sha256).hexdigest()
-
-    def generate_bundle_id(self) -> str:
-        return f"ev-{uuid.uuid4().hex[:16]}"
 
     def _generate_audit_metadata(
         self,
@@ -61,14 +60,15 @@ class EvidenceService:
         semantic_diff: Dict[str, Any],
         target_name: str,
     ) -> str:
-        """Generate professional impact memo via Claude (TECHNICAL_DESIGN §2.5 / compliance.md §7)."""
+        """Generate professional impact memo via Claude."""
         key = self._config.get("anthropic_api_key")
         if not key:
-            return f"Change detected for {target_name}. Impact: {semantic_diff.get('impact_level', 'medium')}. Configure ANTHROPIC_API_KEY for full impact memos."
+            return f"Change detected for {target_name}. Impact: {semantic_diff.get('impact_level', 'medium')}."
+
         from anthropic import Anthropic
         client = Anthropic(api_key=key)
-        prompt = f"""
-Generate a concise compliance impact memo for this detected change.
+
+        prompt = f"""Generate a concise compliance impact memo for this detected change.
 
 Target: {target_name}
 Impact Level: {semantic_diff.get('impact_level', 'medium').upper()}
@@ -98,16 +98,20 @@ Format the memo as follows:
 ## Timeline
 [Expected timeline for review and implementation]
 
-Keep it professional, concise, and actionable for legal/compliance teams.
-"""
-        response = client.messages.create(
-            model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
-            max_tokens=1500,
-            temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
-            system="You are a compliance officer writing impact memos for legal teams.",
-        )
-        return response.content[0].text if response.content else ""
+Keep it professional, concise, and actionable for legal/compliance teams."""
+
+        try:
+            response = client.messages.create(
+                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+                max_tokens=1500,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a compliance officer writing impact memos for legal teams.",
+            )
+            return response.content[0].text if response.content else ""
+        except Exception:
+            logger.exception("Failed to generate impact memo")
+            return f"Change detected for {target_name}. Impact: {semantic_diff.get('impact_level', 'medium')}. Summary: {semantic_diff.get('summary', 'N/A')}"
 
     async def generate_evidence_bundle(
         self,
@@ -117,18 +121,19 @@ Keep it professional, concise, and actionable for legal/compliance teams.
         run_id: str,
         change_id: str,
     ) -> Dict[str, Any]:
-        """Create evidence bundle and persist to DB. Uses Supabase Storage for files if configured."""
+        """Create evidence bundle and persist to DB."""
         bundle_id = str(uuid.uuid4())
-        semantic = (change.get("semantic_diff") or {})
+        semantic = change.get("semantic_diff") or {}
         impact_memo = await self.generate_impact_memo(semantic, current_snapshot.get("target_name", "Unknown"))
         audit_metadata = self._generate_audit_metadata(current_snapshot, previous_snapshot, run_id)
-        content = (current_snapshot.get("content_text") or current_snapshot.get("content") or "")
+        content = current_snapshot.get("content_text") or current_snapshot.get("content") or ""
         audit_metadata["verification_signature"] = self._sign_evidence(content, audit_metadata)
 
         screenshots: List[Dict[str, Any]] = []
-        diff_url = None
         if current_snapshot.get("screenshot_url"):
             screenshots.append({"type": "current", "url": current_snapshot["screenshot_url"]})
+
+        diff_url = None
         if self._config.get("use_supabase_storage"):
             try:
                 bucket = self.db.storage.from_("evidence")
@@ -142,6 +147,7 @@ Keep it professional, concise, and actionable for legal/compliance teams.
                 bucket.upload(diff_path, diff_bytes, {"content-type": "application/json"})
                 diff_url = bucket.get_public_url(diff_path)
             except Exception:
+                logger.warning("Failed to upload evidence to Supabase Storage", exc_info=True)
                 diff_url = None
 
         row = {
@@ -165,6 +171,13 @@ Keep it professional, concise, and actionable for legal/compliance teams.
         r = self.db.table("evidence_bundles").select("*").eq("id", bundle_id).execute()
         return r.data[0] if r.data else None
 
-    async def refresh_urls(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
-        """Refresh presigned URLs if using Supabase Storage. For now return as-is."""
-        return bundle
+    async def list_bundles(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """List all evidence bundles (newest first)."""
+        r = (
+            self.db.table("evidence_bundles")
+            .select("*")
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return r.data or []

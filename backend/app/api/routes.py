@@ -1,5 +1,4 @@
 """FastAPI route definitions."""
-import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -12,7 +11,7 @@ from app.services.orchestrator import OrchestratorEngine
 
 router = APIRouter(prefix="/api", tags=["api"])
 
-# Default org for single-tenant; in production use auth.uid() -> user -> organization_id
+# Default org for single-tenant; in production use auth
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 
@@ -49,16 +48,35 @@ async def create_watch(request: CreateWatchRequest):
 
 @router.get("/watches", response_model=List[dict])
 async def list_watches():
-    """List all watches for the organization."""
+    """List all watches for the organization with run/change counts."""
     svc = WatchService()
     watches = await svc.list_watches(DEFAULT_ORG_ID)
+
+    # Batch: get all runs in one query per watch (but use aggregation columns)
+    from app.db import get_supabase
+    db = get_supabase()
+
     result = []
     for w in watches:
-        runs = await svc.get_watch_runs(str(w["id"]), limit=1000)
-        changes_count = 0
-        for r in runs:
-            changes_count += r.get("changes_detected") or 0
-        result.append(_watch_to_response(w, total_runs=len(runs), total_changes=changes_count))
+        wid = str(w["id"])
+        # Use a count query instead of fetching all runs
+        runs_r = (
+            db.table("watch_runs")
+            .select("id", count="exact")
+            .eq("watch_id", wid)
+            .execute()
+        )
+        total_runs = runs_r.count if runs_r.count is not None else len(runs_r.data or [])
+
+        changes_r = (
+            db.table("changes")
+            .select("id", count="exact")
+            .eq("watch_id", wid)
+            .execute()
+        )
+        total_changes = changes_r.count if changes_r.count is not None else len(changes_r.data or [])
+
+        result.append(_watch_to_response(w, total_runs=total_runs, total_changes=total_changes))
     return result
 
 
@@ -69,9 +87,15 @@ async def get_watch(watch_id: str):
     watch = await svc.get_watch(watch_id)
     if not watch:
         raise HTTPException(status_code=404, detail="Watch not found")
-    runs = await svc.get_watch_runs(watch_id, limit=1000)
-    changes_count = sum((r.get("changes_detected") or 0) for r in runs)
-    return _watch_to_response(watch, total_runs=len(runs), total_changes=changes_count)
+
+    from app.db import get_supabase
+    db = get_supabase()
+    runs_r = db.table("watch_runs").select("id", count="exact").eq("watch_id", watch_id).execute()
+    total_runs = runs_r.count if runs_r.count is not None else len(runs_r.data or [])
+    changes_r = db.table("changes").select("id", count="exact").eq("watch_id", watch_id).execute()
+    total_changes = changes_r.count if changes_r.count is not None else len(changes_r.data or [])
+
+    return _watch_to_response(watch, total_runs=total_runs, total_changes=total_changes)
 
 
 @router.post("/watches/{watch_id}/run")
@@ -92,7 +116,7 @@ async def _execute_watch_background(watch_id: str):
 
 @router.get("/watches/{watch_id}/history", response_model=dict)
 async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
-    """Get watch execution history (runs for this watch)."""
+    """Get watch execution history."""
     svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
@@ -116,6 +140,27 @@ async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
         ).model_dump() for r in runs],
         "total": len(runs),
     }
+
+
+@router.get("/runs/recent")
+async def recent_runs(limit: int = 50):
+    """Recent runs across all watches."""
+    from app.db import get_supabase
+    db = get_supabase()
+
+    # Single query: join runs with watch names
+    r = (
+        db.table("watch_runs")
+        .select("*, watches(name)")
+        .order("started_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    runs = []
+    for row in (r.data or []):
+        row["watch_name"] = row.pop("watches", {}).get("name") if isinstance(row.get("watches"), dict) else None
+        runs.append(row)
+    return {"runs": runs}
 
 
 @router.get("/runs/{run_id}", response_model=dict)
@@ -143,33 +188,33 @@ async def get_run(run_id: str):
     }
 
 
+@router.get("/evidence", response_model=dict)
+async def list_evidence_bundles(limit: int = 50, offset: int = 0):
+    """List all evidence bundles (newest first)."""
+    ev = EvidenceService()
+    bundles = await ev.list_bundles(limit=limit, offset=offset)
+    return {"bundles": bundles, "total": len(bundles)}
+
+
 @router.get("/evidence/{bundle_id}", response_model=dict)
 async def get_evidence_bundle(bundle_id: str):
-    """Get evidence bundle by ID (with refreshed URLs if applicable)."""
+    """Get evidence bundle by ID."""
     ev = EvidenceService()
     bundle = await ev.get_bundle(bundle_id)
     if not bundle:
         raise HTTPException(status_code=404, detail="Evidence bundle not found")
-    bundle = await ev.refresh_urls(bundle)
     return bundle
-
-
-@router.get("/runs/recent")
-async def recent_runs(limit: int = 50):
-    """Recent runs across all watches for the org."""
-    svc = WatchService()
-    watches = await svc.list_watches(DEFAULT_ORG_ID)
-    runs: List[Dict[str, Any]] = []
-    for w in watches:
-        r = await svc.get_watch_runs(str(w["id"]), limit=5)
-        for x in r:
-            x["watch_name"] = w.get("name")
-            runs.append(x)
-    runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
-    return {"runs": runs[:limit]}
 
 
 @router.get("/health")
 async def health():
-    """Health check."""
-    return {"status": "ok"}
+    """Health check with dependency status."""
+    from app.config import get_config
+    config = get_config()
+    return {
+        "status": "ok",
+        "browser_use": bool(config.get("browser_use_api_key")),
+        "anthropic": bool(config.get("anthropic_api_key")),
+        "linear": bool(config.get("linear_api_key")),
+        "slack": bool(config.get("slack_bot_token")),
+    }

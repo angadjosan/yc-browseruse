@@ -100,6 +100,17 @@ export async function getEvidenceBundle(bundleId: string): Promise<EvidenceBundl
   return r.json();
 }
 
+export async function listEvidenceBundles(limit?: number, offset?: number): Promise<EvidenceBundle[]> {
+  const params = new URLSearchParams();
+  if (limit != null) params.set("limit", String(limit));
+  if (offset != null) params.set("offset", String(offset));
+  const q = params.toString();
+  const r = await fetch(`${API_URL}/api/evidence${q ? `?${q}` : ""}`);
+  if (!r.ok) throw new Error("Failed to fetch evidence bundles");
+  const data = await r.json();
+  return data.bundles ?? [];
+}
+
 export type RecentRun = WatchRun & { watch_name?: string };
 
 export async function getRun(runId: string): Promise<WatchRun & { watch_name?: string }> {

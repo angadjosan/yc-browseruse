@@ -1,4 +1,10 @@
-We're making sure you don't miss anything.
+What makes this really unique is if we have really good prompting + AI use. work hard on that once we get basic UX + input output flows working. find some way to expose reasoning to frontend.
+
+ideal flow is you give us product description + landing page. We can crawl your stuff and make it work
+
+We're making sure you don't miss anything - small diffs.
+
+Git-like system.
 
 Emphasize how big of a problem it is - 250 changes a day.
 Humans miss small stuff - make sure we TRACK the smaller changes. We get the small stuff. Super detailed and precise reporting.

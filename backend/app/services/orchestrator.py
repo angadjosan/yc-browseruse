@@ -6,13 +6,13 @@ assigns tasks to browser-use agents (with custom Tools), retries with adapt_task
 import asyncio
 import hashlib
 import json
-import re
+import logging
 import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.config import get_config
 from app.db import get_supabase
@@ -21,9 +21,11 @@ from app.services.evidence_service import EvidenceService
 from app.services.notification_hub import NotificationHub
 from app.services.watch_service import WatchService
 
+logger = logging.getLogger(__name__)
+
 
 class BrowserTask(BaseModel):
-    """Per-target browser task from orchestrator plan (TECHNICAL_DESIGN §2.1)."""
+    """Per-target browser task from orchestrator plan."""
     id: str
     target_name: str
     task_description: str
@@ -34,14 +36,14 @@ class BrowserTask(BaseModel):
 
 
 class ExecutionPlan(BaseModel):
-    """Claude-generated execution plan for a watch run (TECHNICAL_DESIGN §2.1)."""
+    """Claude-generated execution plan for a watch run."""
     watch_id: str
     run_id: str
     tasks: List[BrowserTask]
-    estimated_duration: int = 0  # seconds
+    estimated_duration: int = 0
 
 
-def _task_result_to_dict(
+def _task_result(
     task_id: str,
     target_name: str,
     status: str,
@@ -52,7 +54,6 @@ def _task_result_to_dict(
     error: Optional[str] = None,
     agent_thoughts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    ts = int(time.time())
     out: Dict[str, Any] = {
         "task_id": task_id,
         "target_name": target_name,
@@ -61,7 +62,7 @@ def _task_result_to_dict(
         "content_hash": content_hash,
         "url": url,
         "screenshot_url": screenshot_url,
-        "timestamp": ts,
+        "timestamp": int(time.time()),
         "captured_at": datetime.utcnow().isoformat(),
         "error": error,
     }
@@ -98,7 +99,7 @@ class OrchestratorEngine:
         if not self.config.get("browser_use_api_key"):
             return False
         try:
-            from browser_use import Agent, Browser, ChatBrowserUse
+            from browser_use import Agent, Browser, ChatBrowserUse  # noqa: F401
             return True
         except ImportError:
             return False
@@ -106,11 +107,10 @@ class OrchestratorEngine:
     def _has_anthropic(self) -> bool:
         return bool(self.config.get("anthropic_api_key"))
 
-    def _generate_run_id(self) -> str:
-        return str(uuid.uuid4())
+    # ── Main entry ────────────────────────────────────────────────────
 
     async def execute_watch(self, watch_id: str) -> Dict[str, Any]:
-        """Main entry: load watch, create run, plan (Claude), execute tasks (browser-use or mock), diff, evidence, notify."""
+        """Load watch, create run, plan (Claude), execute tasks (browser-use), diff, evidence, notify."""
         watch = await self.watch_service.get_watch(watch_id)
         if not watch:
             return {"run_id": None, "status": "error", "error": "Watch not found"}
@@ -126,17 +126,23 @@ class OrchestratorEngine:
             config = watch.get("config") or {}
             targets = config.get("targets") or [
                 {
-                    "name": "default",
-                    "description": watch.get("name", ""),
+                    "name": watch.get("name", "default"),
+                    "description": watch.get("description") or watch.get("name", ""),
                     "search_query": watch.get("name", ""),
-                    "extraction_instructions": "Extract main text content.",
+                    "extraction_instructions": "Extract the main text content of the regulation or policy.",
                 }
             ]
 
             if self._has_browser_use() and self._has_anthropic():
+                logger.info(f"[run={run_id}] Using real browser-use + Claude pipeline")
                 plan = await self.create_execution_plan(watch, run_id)
                 task_results = await self.execute_tasks_with_retries(plan, run_id)
+            elif self._has_browser_use():
+                logger.info(f"[run={run_id}] Using browser-use with fallback plan (no Claude for planning)")
+                plan = self._plan_from_targets(watch["id"], run_id, targets)
+                task_results = await self.execute_tasks_with_retries(plan, run_id)
             else:
+                logger.warning(f"[run={run_id}] browser-use unavailable — falling back to mock tasks")
                 task_results = await self._execute_mock_tasks(watch_id, run_id, targets)
 
             for tr in task_results:
@@ -145,6 +151,7 @@ class OrchestratorEngine:
                 else:
                     tasks_fail += 1
 
+            # Save snapshots, diff against previous, generate evidence
             for tr in task_results:
                 if tr.get("status") != "success":
                     continue
@@ -168,22 +175,10 @@ class OrchestratorEngine:
                     content_hash=current_snapshot["content_hash"],
                     screenshot_url=current_snapshot.get("screenshot_url"),
                 )
-                previous = await self.watch_service.get_previous_snapshot(watch_id, target_name)
-                if previous and str(previous.get("run_id")) == run_id:
-                    prev_runs = await self.watch_service.get_watch_runs(watch_id, limit=2)
-                    if len(prev_runs) >= 2:
-                        old_run_id = str(prev_runs[1]["id"])
-                        r2 = (
-                            self.db.table("snapshots")
-                            .select("*")
-                            .eq("watch_id", watch_id)
-                            .eq("target_name", target_name)
-                            .eq("run_id", old_run_id)
-                            .order("captured_at", desc=True)
-                            .limit(1)
-                            .execute()
-                        )
-                        previous = r2.data[0] if r2.data else None
+
+                # Get the previous snapshot (not from this run)
+                previous = await self._get_previous_snapshot(watch_id, run_id, target_name)
+
                 if previous:
                     change = await self.diff_engine.detect_changes(current_snapshot, previous)
                     if change.get("has_changes"):
@@ -214,11 +209,13 @@ class OrchestratorEngine:
                                 slack_channel=integrations.get("slack_channel"),
                                 evidence_url=evidence.get("diff_url"),
                             )
+
         except Exception as e:
+            logger.exception(f"[run={run_id}] Watch execution failed")
             await self.watch_service.update_run(run_id, status="failed", error_message=str(e))
             return {"run_id": run_id, "status": "failed", "error": str(e), "changes": 0}
 
-        # Aggregate agent reasoning for run (AGENTS_BROWSERUSE: model_thoughts per task)
+        # Aggregate agent reasoning
         run_agent_thoughts = []
         run_agent_summary_parts = []
         for tr in task_results:
@@ -232,6 +229,7 @@ class OrchestratorEngine:
                     text = t.get("thought") or t.get("reasoning") or t.get("text") or ""
                     if isinstance(text, str) and text.strip():
                         run_agent_summary_parts.append(text.strip()[:200])
+
         run_agent_summary = None
         if run_agent_summary_parts:
             run_agent_summary = run_agent_summary_parts[0]
@@ -253,19 +251,38 @@ class OrchestratorEngine:
             agent_thoughts=run_agent_thoughts if run_agent_thoughts else None,
         )
         self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
+        logger.info(f"[run={run_id}] Completed: {tasks_ok} ok, {tasks_fail} failed, {changes_count} changes")
         return {"run_id": run_id, "status": "completed", "changes": changes_count}
 
+    # ── Previous snapshot helper ──────────────────────────────────────
+
+    async def _get_previous_snapshot(self, watch_id: str, current_run_id: str, target_name: str) -> Optional[Dict[str, Any]]:
+        """Get the most recent snapshot for this watch+target from a PREVIOUS run (not the current one)."""
+        r = (
+            self.db.table("snapshots")
+            .select("*")
+            .eq("watch_id", watch_id)
+            .eq("target_name", target_name)
+            .neq("run_id", current_run_id)
+            .order("captured_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return r.data[0] if r.data else None
+
+    # ── Execution plan ────────────────────────────────────────────────
+
     async def create_execution_plan(self, watch: Dict[str, Any], run_id: str) -> ExecutionPlan:
-        """Use Claude to build execution plan from watch config (TECHNICAL_DESIGN §2.1)."""
+        """Use Claude to build execution plan from watch config."""
         config = watch.get("config") or {}
         targets = config.get("targets") or []
         if not targets:
             targets = [
                 {
-                    "name": "default",
-                    "description": watch.get("name", ""),
+                    "name": watch.get("name", "default"),
+                    "description": watch.get("description") or watch.get("name", ""),
                     "search_query": watch.get("name", ""),
-                    "extraction_instructions": "Extract the main text content.",
+                    "extraction_instructions": "Extract the main text content of the regulation or policy.",
                 }
             ]
 
@@ -273,61 +290,67 @@ class OrchestratorEngine:
         if not client:
             return self._plan_from_targets(watch["id"], run_id, targets)
 
-        prompt = f"""
-You are a compliance monitoring expert. Given this watch configuration,
+        prompt = f"""You are a compliance monitoring expert. Given this watch configuration,
 create a detailed execution plan for browser automation agents.
 
 Watch name: {watch.get('name', 'Unnamed')}
+Watch description: {watch.get('description', '')}
 Watch config:
 {json.dumps(config, indent=2)}
 
 For each target to monitor, create a specific task with:
 1. id: short unique id (e.g. target-0, target-1)
 2. target_name: display name
-3. task_description: one sentence of what to do
-4. starting_url: optional URL to start from, or null
-5. search_query: what to search for (e.g. "GDPR Article 25")
-6. extraction_instructions: what content to extract
-7. fallback_strategy: optional alternative if primary fails
+3. task_description: detailed instructions for a browser agent — what to search for and what page to navigate to
+4. starting_url: a specific URL to start from (use the most authoritative government/official source). Use Google if unsure.
+5. search_query: what to search for if no direct URL
+6. extraction_instructions: what content to extract from the page
+7. fallback_strategy: alternative approach if the primary one fails
 
-Return ONLY valid JSON in this exact shape (no markdown):
+Return ONLY valid JSON in this exact shape (no markdown fences):
 {{
   "tasks": [
     {{
       "id": "target-0",
       "target_name": "...",
       "task_description": "...",
-      "starting_url": null,
+      "starting_url": "https://...",
       "search_query": "...",
       "extraction_instructions": "...",
-      "fallback_strategy": null
+      "fallback_strategy": "..."
     }}
   ],
   "estimated_duration": 120
-}}
-"""
+}}"""
         try:
             response = client.messages.create(
                 model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
                 max_tokens=4096,
                 temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance automation expert. Return only the JSON object, no other text.",
+                system="You are a compliance automation expert. Return only the JSON object, no other text or markdown fences.",
             )
             text = response.content[0].text if response.content else "{}"
-            plan_data = self._parse_claude_plan(text)
-            return ExecutionPlan(
-                watch_id=str(watch["id"]),
-                run_id=run_id,
-                tasks=[BrowserTask(**t) for t in plan_data.get("tasks", [])],
-                estimated_duration=plan_data.get("estimated_duration", 60),
-            )
+            plan_data = self._parse_json_from_text(text)
+            tasks = []
+            for t in plan_data.get("tasks", []):
+                try:
+                    tasks.append(BrowserTask(**t))
+                except Exception:
+                    continue
+            if tasks:
+                return ExecutionPlan(
+                    watch_id=str(watch["id"]),
+                    run_id=run_id,
+                    tasks=tasks,
+                    estimated_duration=plan_data.get("estimated_duration", 60),
+                )
         except Exception:
-            return self._plan_from_targets(watch["id"], run_id, targets)
+            logger.exception("Failed to create Claude execution plan, falling back to targets")
 
-    def _plan_from_targets(
-        self, watch_id: str, run_id: str, targets: List[Dict[str, Any]]
-    ) -> ExecutionPlan:
+        return self._plan_from_targets(watch["id"], run_id, targets)
+
+    def _plan_from_targets(self, watch_id: str, run_id: str, targets: List[Dict[str, Any]]) -> ExecutionPlan:
         """Build plan directly from watch targets when Claude is unavailable."""
         tasks = []
         for i, t in enumerate(targets):
@@ -344,59 +367,34 @@ Return ONLY valid JSON in this exact shape (no markdown):
             )
         return ExecutionPlan(watch_id=str(watch_id), run_id=run_id, tasks=tasks, estimated_duration=60)
 
-    def _parse_claude_plan(self, text: str) -> Dict[str, Any]:
-        """Extract JSON plan from Claude response."""
-        text = text.strip()
-        for start in ("{", "\n{"):
-            idx = text.find(start)
-            if idx != -1:
-                text = text[idx:]
-                break
-        for end_marker in ("}\n", "}"):
-            last = text.rfind("}")
-            if last != -1:
-                text = text[: last + 1]
-                break
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"tasks": [], "estimated_duration": 60}
+    # ── Task execution ────────────────────────────────────────────────
 
-    async def execute_tasks_with_retries(
-        self, plan: ExecutionPlan, run_id: str
-    ) -> List[Dict[str, Any]]:
-        """Run all tasks with retries; return list of task result dicts (TECHNICAL_DESIGN §2.1)."""
+    async def execute_tasks_with_retries(self, plan: ExecutionPlan, run_id: str) -> List[Dict[str, Any]]:
+        """Run all tasks concurrently with retries."""
         coros = [self.execute_single_task_with_retry(t, run_id) for t in plan.tasks]
         results = await asyncio.gather(*coros, return_exceptions=True)
         out = []
         for i, r in enumerate(results):
             if isinstance(r, Exception):
                 task = plan.tasks[i] if i < len(plan.tasks) else None
-                name = task.target_name if task else "unknown"
-                out.append(
-                    _task_result_to_dict(
-                        task_id=task.id if task else "unknown",
-                        target_name=name,
-                        status="failed",
-                        error=str(r),
-                    )
-                )
+                out.append(_task_result(
+                    task_id=task.id if task else "unknown",
+                    target_name=task.target_name if task else "unknown",
+                    status="failed",
+                    error=str(r),
+                ))
             else:
                 out.append(r)
         return out
 
-    async def execute_single_task_with_retry(
-        self, task: BrowserTask, run_id: str
-    ) -> Dict[str, Any]:
-        """Execute one task with retries and optional self-healing via adapt_task (TECHNICAL_DESIGN §2.1)."""
+    async def execute_single_task_with_retry(self, task: BrowserTask, run_id: str) -> Dict[str, Any]:
+        """Execute one browser-use task with retries and self-healing."""
         max_retries = 3
-        attempt = 0
-        last_error = None
 
-        while attempt < max_retries:
+        for attempt in range(max_retries):
             try:
                 result = await self.execute_browser_use_task(task)
-                return _task_result_to_dict(
+                return _task_result(
                     task_id=task.id,
                     target_name=task.target_name,
                     status="success",
@@ -407,14 +405,14 @@ Return ONLY valid JSON in this exact shape (no markdown):
                     agent_thoughts=result.get("agent_thoughts"),
                 )
             except Exception as e:
-                last_error = e
-                attempt += 1
-                if attempt >= max_retries:
+                logger.warning(f"[task={task.id}] Attempt {attempt+1}/{max_retries} failed: {e}")
+                if attempt == max_retries - 1:
+                    # Last resort: try self-healing via Claude
                     adapted = await self.adapt_task(task, e)
                     if adapted:
                         try:
                             result = await self.execute_browser_use_task(adapted)
-                            return _task_result_to_dict(
+                            return _task_result(
                                 task_id=task.id,
                                 target_name=task.target_name,
                                 status="success",
@@ -425,29 +423,14 @@ Return ONLY valid JSON in this exact shape (no markdown):
                                 agent_thoughts=result.get("agent_thoughts"),
                             )
                         except Exception as e2:
-                            return _task_result_to_dict(
-                                task_id=task.id,
-                                target_name=task.target_name,
-                                status="failed",
-                                error=str(e2),
-                            )
-                    return _task_result_to_dict(
-                        task_id=task.id,
-                        target_name=task.target_name,
-                        status="failed",
-                        error=str(e),
-                    )
+                            return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error=str(e2))
+                    return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error=str(e))
                 await asyncio.sleep(2 ** attempt)
 
-        return _task_result_to_dict(
-            task_id=task.id,
-            target_name=task.target_name,
-            status="failed",
-            error=str(last_error) if last_error else "Unknown error",
-        )
+        return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error="Max retries exceeded")
 
     async def execute_browser_use_task(self, task: BrowserTask) -> Dict[str, Any]:
-        """Run one task with browser-use Agent and custom save_content tool (TECHNICAL_DESIGN §2.1)."""
+        """Run one task with browser-use Agent + cloud browser."""
         from browser_use import Agent, Browser, ChatBrowserUse, Tools, ActionResult
 
         extracted_data: Dict[str, str] = {}
@@ -458,59 +441,91 @@ Return ONLY valid JSON in this exact shape (no markdown):
             extracted_data["content"] = content
             return ActionResult(extracted_content=content)
 
-        nav = f"Search for: {task.search_query}" if task.search_query else (f"Navigate to: {task.starting_url}" if task.starting_url else "Search for the target.")
-        task_prompt = f"""
-{task.task_description}
+        # Build the agent task prompt
+        nav = ""
+        if task.starting_url:
+            nav = f"Go to {task.starting_url}"
+        elif task.search_query:
+            nav = f'Search Google for: "{task.search_query}"'
+        else:
+            nav = f'Search Google for: "{task.target_name}"'
+
+        task_prompt = f"""{task.task_description}
 
 Target: {task.target_name}
 
-Instructions:
+Steps:
 1. {nav}
-2. {task.extraction_instructions}
-3. Use the save_content action to save what you extract.
-4. Take a screenshot of the final page if possible.
+2. Navigate to the most relevant official/authoritative page
+3. {task.extraction_instructions}
+4. Use the save_content action to save the full text you extracted.
 
-Be thorough and extract all relevant compliance information.
-"""
+Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
         browser = Browser(headless=True, use_cloud=use_cloud)
         llm = ChatBrowserUse()
+
         agent = Agent(
             task=task_prompt,
             llm=llm,
             browser=browser,
             tools=tools,
-            max_steps=50,
+            max_steps=30,
+            use_vision="auto",
         )
-        if hasattr(agent, "use_vision"):
-            agent.use_vision = True
 
-        history = await agent.run()
+        try:
+            history = await agent.run()
+        finally:
+            # Ensure browser is closed
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
-        content = extracted_data.get("content") or ""
-        if not content and hasattr(history, "final_result"):
-            fr = history.final_result()
-            if isinstance(fr, dict) and "content" in fr:
-                content = fr["content"]
-            elif isinstance(fr, str):
-                content = fr
-        if not content and hasattr(history, "extracted_content"):
-            content = history.extracted_content() or ""
-        content = content or "No content extracted."
+        # Extract content — prefer our custom save_content action
+        content = extracted_data.get("content", "")
 
+        # Fallback: try final_result
+        if not content:
+            try:
+                fr = history.final_result()
+                if isinstance(fr, str) and fr.strip():
+                    content = fr
+                elif isinstance(fr, dict) and fr.get("content"):
+                    content = fr["content"]
+            except Exception:
+                pass
+
+        # Fallback: try extracted_content (returns list of strings)
+        if not content:
+            try:
+                ec = history.extracted_content()
+                if ec:
+                    # Filter out None and empty strings
+                    parts = [str(x) for x in ec if x]
+                    content = "\n".join(parts)
+            except Exception:
+                pass
+
+        content = content.strip() or "No content extracted."
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        url = ""
-        if hasattr(history, "urls") and callable(history.urls):
-            urls = history.urls()
-            url = urls[-1] if urls else ""
-        screenshot_url = None
-        if hasattr(history, "screenshots") and callable(history.screenshots):
-            screens = history.screenshots()
-            if screens:
-                screenshot_url = screens[-1] if isinstance(screens[-1], str) else None
 
-        # Capture agent reasoning (AGENTS_BROWSERUSE: history.model_thoughts())
+        # Extract URL
+        url = ""
+        try:
+            urls = history.urls()
+            if urls:
+                url = urls[-1] if isinstance(urls[-1], str) else ""
+        except Exception:
+            pass
+
+        # Screenshots — browser-use returns base64 strings, not URLs
+        # For now, skip storing base64 screenshots (they're huge)
+        screenshot_url = None
+
+        # Agent reasoning
         agent_thoughts = self._serialize_model_thoughts(history)
 
         return {
@@ -521,14 +536,15 @@ Be thorough and extract all relevant compliance information.
             "agent_thoughts": agent_thoughts,
         }
 
+    # ── Self-healing ──────────────────────────────────────────────────
+
     async def adapt_task(self, task: BrowserTask, error: Exception) -> Optional[BrowserTask]:
-        """Use Claude to suggest an alternative task config after failure (TECHNICAL_DESIGN §2.1)."""
+        """Use Claude to suggest an alternative task config after failure."""
         client = self._get_anthropic()
         if not client:
             return None
 
-        prompt = f"""
-This browser automation task failed:
+        prompt = f"""This browser automation task failed:
 
 Task: {task.task_description}
 Target: {task.target_name}
@@ -539,7 +555,7 @@ Error: {str(error)}
 Suggest ONE alternative approach. Return ONLY valid JSON:
 {{
   "task_description": "...",
-  "starting_url": null or "https://...",
+  "starting_url": "https://...",
   "search_query": "...",
   "extraction_instructions": "..."
 }}
@@ -554,8 +570,8 @@ If no viable alternative, return {{}}.
                 system="You are a compliance automation expert. Return only JSON.",
             )
             text = response.content[0].text if response.content else "{}"
-            adapted = self._parse_task_adaptation(text)
-            if not adapted:
+            adapted = self._parse_json_from_text(text)
+            if not adapted or not adapted.get("task_description"):
                 return None
             return BrowserTask(
                 id=task.id,
@@ -567,45 +583,55 @@ If no viable alternative, return {{}}.
                 fallback_strategy=task.fallback_strategy,
             )
         except Exception:
+            logger.exception("adapt_task failed")
             return None
+
+    # ── Helpers ────────────────────────────────────────────────────────
 
     def _serialize_model_thoughts(self, history: Any) -> List[Dict[str, Any]]:
-        """Extract agent reasoning from browser-use history (AGENTS_BROWSERUSE: model_thoughts())."""
-        if not hasattr(history, "model_thoughts") or not callable(history.model_thoughts):
-            return []
+        """Extract agent reasoning from browser-use history."""
         try:
             thoughts = history.model_thoughts() or []
-            out = []
-            for t in thoughts:
-                if isinstance(t, dict):
-                    out.append(t)
-                elif hasattr(t, "thought"):
-                    out.append({"thought": getattr(t, "thought", str(t))})
-                elif hasattr(t, "reasoning"):
-                    out.append({"reasoning": getattr(t, "reasoning", str(t))})
-                elif hasattr(t, "__dict__"):
-                    out.append({k: v for k, v in t.__dict__.items() if not k.startswith("_")})
-                else:
-                    out.append({"text": str(t)})
-            return out
         except Exception:
             return []
+        out = []
+        for t in thoughts:
+            if isinstance(t, dict):
+                out.append(t)
+            elif hasattr(t, "__dict__"):
+                d = {}
+                for k, v in t.__dict__.items():
+                    if not k.startswith("_"):
+                        try:
+                            json.dumps(v)
+                            d[k] = v
+                        except (TypeError, ValueError):
+                            d[k] = str(v)
+                out.append(d)
+            else:
+                out.append({"text": str(t)})
+        return out
 
-    def _parse_task_adaptation(self, text: str) -> Optional[Dict[str, Any]]:
+    def _parse_json_from_text(self, text: str) -> Dict[str, Any]:
+        """Extract JSON object from text that may contain markdown fences or prose."""
         text = text.strip()
-        for start in ("{", "\n{"):
-            idx = text.find(start)
-            if idx != -1:
-                text = text[idx:]
-                break
-        last = text.rfind("}")
-        if last != -1:
-            text = text[: last + 1]
-        try:
-            data = json.loads(text)
-            return data if data else None
-        except json.JSONDecodeError:
-            return None
+        # Strip markdown code fences
+        if "```" in text:
+            import re
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+            if match:
+                text = match.group(1).strip()
+        # Find the JSON object
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        return {}
+
+    # ── Mock fallback ─────────────────────────────────────────────────
 
     async def _execute_mock_tasks(
         self,
@@ -613,21 +639,18 @@ If no viable alternative, return {{}}.
         run_id: str,
         targets: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Mock task execution when browser-use or Anthropic is not configured."""
+        """Mock task execution when browser-use is not available."""
         results = []
         for i, t in enumerate(targets):
             name = t.get("name", f"target-{i}")
-            content = f"Mock content for {name}. Configure BROWSER_USE_API_KEY and ANTHROPIC_API_KEY for real monitoring."
+            content = f"[MOCK] Content for {name}. Install browser-use and set BROWSER_USE_API_KEY for real monitoring."
             content_hash = hashlib.sha256(content.encode()).hexdigest()
-            results.append(
-                _task_result_to_dict(
-                    task_id=t.get("id", f"target-{i}"),
-                    target_name=name,
-                    status="success",
-                    content=content,
-                    content_hash=content_hash,
-                    url="https://example.com/mock",
-                    screenshot_url=None,
-                )
-            )
+            results.append(_task_result(
+                task_id=t.get("id", f"target-{i}"),
+                target_name=name,
+                status="success",
+                content=content,
+                content_hash=content_hash,
+                url="https://example.com/mock",
+            ))
         return results

@@ -14,9 +14,11 @@ anthropic>=0.18.0
 httpx>=0.26.0
 python-multipart>=0.0.6
 
-# Browser automation (TECHNICAL_DESIGN §2.1). Requires Python 3.11+.
-# Uncomment when using Python 3.11+; without it, runs use mock data.
-# browser-use>=0.1.0
+# Browser automation
+browser-use>=0.1.0
+
+# Scheduler
+apscheduler>=3.10.0
 
 # Utils
 python-dotenv>=1.0.0

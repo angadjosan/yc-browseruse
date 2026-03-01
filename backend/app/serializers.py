@@ -112,7 +112,7 @@ def serialize_change_event(row: Dict[str, Any], watch: Dict[str, Any]) -> Dict[s
         "severity": IMPACT_TO_SEVERITY.get(row.get("impact_level", "medium"), "med"),
         "jurisdiction": jurisdiction,
         "sourceType": source_type,
-        "createdAt": row.get("created_at", ""),
+        "createdAt": row.get("detected_at", ""),
         "runId": str(row["run_id"]),
     }
 

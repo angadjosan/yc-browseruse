@@ -38,9 +38,9 @@ class AnalyzeProductRequest(BaseModel):
 
 # ── Background helpers ──────────────────────────────────────────────────────
 
-async def _execute_watch_background(watch_id: str):
+async def _execute_watch_background(watch_id: str, run_id: Optional[str] = None):
     orchestrator = OrchestratorEngine()
-    await orchestrator.execute_watch(watch_id)
+    await orchestrator.execute_watch(watch_id, run_id=run_id)
 
 
 async def _run_analysis_background(job_id: str, product_url: str):
@@ -175,7 +175,7 @@ async def run_watch_now(watch_id: str, background_tasks: BackgroundTasks):
     # Create the run row NOW so we have a run_id to return immediately
     run = await svc.create_run(watch_id, status="running")
     run_id = str(run["id"])
-    background_tasks.add_task(_execute_watch_background, watch_id)
+    background_tasks.add_task(_execute_watch_background, watch_id, run_id)
     return {"status": "queued", "watch_id": watch_id, "run_id": run_id}
 
 
@@ -226,7 +226,7 @@ async def get_watch_changes(watch_id: str, limit: int = 50):
             db.table("changes")
             .select("*, watches(name, jurisdiction, scope)")
             .eq("watch_id", watch_id)
-            .order("created_at", desc=True)
+            .order("detected_at", desc=True)
             .limit(limit)
             .execute()
         )
@@ -322,7 +322,7 @@ async def list_changes(limit: int = 50, watch_id: Optional[str] = None):
         q = (
             db.table("changes")
             .select("*, watches(name, jurisdiction, scope)")
-            .order("created_at", desc=True)
+            .order("detected_at", desc=True)
             .limit(limit)
         )
         if watch_id:

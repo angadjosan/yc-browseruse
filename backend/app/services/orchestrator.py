@@ -112,14 +112,15 @@ class OrchestratorEngine:
 
     # ── Main entry ────────────────────────────────────────────────────
 
-    async def execute_watch(self, watch_id: str) -> Dict[str, Any]:
-        """Load watch, create run, plan (Claude), execute tasks (browser-use), diff, evidence, notify."""
+    async def execute_watch(self, watch_id: str, run_id: Optional[str] = None) -> Dict[str, Any]:
+        """Load watch, create run (or reuse existing), plan (Claude), execute tasks (browser-use), diff, evidence, notify."""
         watch = await self.watch_service.get_watch(watch_id)
         if not watch:
             return {"run_id": None, "status": "error", "error": "Watch not found"}
 
-        run = await self.watch_service.create_run(watch_id, status="running")
-        run_id = str(run["id"])
+        if run_id is None:
+            run = await self.watch_service.create_run(watch_id, status="running")
+            run_id = str(run["id"])
         start = time.time()
         changes_count = 0
         tasks_ok = 0

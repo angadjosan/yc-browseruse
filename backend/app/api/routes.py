@@ -2,6 +2,7 @@
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -27,8 +28,26 @@ router = APIRouter(prefix="/api", tags=["api"])
 # Default org for single-tenant; in production use auth
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
-# In-memory job store for product analysis (MVP: single-tenant, single process)
-_analysis_jobs: Dict[str, Dict[str, Any]] = {}
+# File-backed job store — survives server restarts during demo
+_JOBS_FILE = Path(__file__).resolve().parent.parent.parent / ".analysis_jobs.json"
+
+
+def _load_jobs() -> Dict[str, Any]:
+    try:
+        if _JOBS_FILE.exists():
+            return json.loads(_JOBS_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_job(job_id: str, data: Dict[str, Any]) -> None:
+    try:
+        jobs = _load_jobs()
+        jobs[job_id] = data
+        _JOBS_FILE.write_text(json.dumps(jobs, default=str))
+    except Exception:
+        pass
 
 
 class AnalyzeProductRequest(BaseModel):
@@ -47,12 +66,19 @@ async def _run_analysis_background(job_id: str, product_url: str):
     """Background task: run product analysis and update job store."""
     import time
 
-    job = _analysis_jobs[job_id]
-    job["status"] = "running"
-    job["logs"] = []
-
     def _log(msg: str):
+        jobs = _load_jobs()
+        job = jobs.get(job_id, {})
+        # Append to logs, initializing if needed
+        if "logs" not in job:
+            job["logs"] = []
         job["logs"].append({"t": time.time(), "msg": msg})
+        job["status"] = "running"
+        job["product_url"] = product_url
+        _save_job(job_id, job)
+
+    # Initialize job as running and empty logs
+    _save_job(job_id, {"status": "running", "product_url": product_url, "logs": []})
 
     analyzer = ProductAnalyzer(log_fn=_log)
     try:
@@ -60,30 +86,31 @@ async def _run_analysis_background(job_id: str, product_url: str):
             product_url=product_url,
             organization_id=DEFAULT_ORG_ID,
         )
-        job["product_info"] = {
-            "content_preview": result["product_info"]["content"][:500],
-            "url": result["product_info"].get("url", product_url),
-        }
-        job["risks_identified"] = len(result["risks"])
-        job["risks"] = [
-            {
-                "regulation_title": r.get("regulation_title", ""),
-                "risk_rationale": r.get("risk_rationale", ""),
-                "jurisdiction": r.get("jurisdiction", ""),
-                "scope": r.get("scope", ""),
-                "source_url": r.get("source_url", ""),
-                "check_interval_seconds": r.get("check_interval_seconds", 86400),
-            }
-            for r in result["risks"]
-        ]
-        job.update({
+        _save_job(job_id, {
             "status": "completed",
+            "product_url": product_url,
+            "product_info": {
+                "content_preview": result["product_info"]["content"][:500],
+                "url": result["product_info"].get("url", product_url),
+            },
+            "risks_identified": len(result["risks"]),
+            "risks": [
+                {
+                    "regulation_title": r.get("regulation_title", ""),
+                    "risk_rationale": r.get("risk_rationale", ""),
+                    "jurisdiction": r.get("jurisdiction", ""),
+                    "scope": r.get("scope", ""),
+                    "source_url": r.get("source_url", ""),
+                    "check_interval_seconds": r.get("check_interval_seconds", 86400),
+                }
+                for r in result["risks"]
+            ],
             "watches_created": len(result["watches"]),
             "watches": [serialize_watch(w) for w in result["watches"]],
         })
     except Exception as e:
         _log(f"Error: {str(e)}")
-        job.update({"status": "failed", "error": str(e)})
+        _save_job(job_id, {"status": "failed", "product_url": product_url, "error": str(e)})
 
 
 # ── Product analysis (onboarding) ───────────────────────────────────────────
@@ -95,7 +122,7 @@ async def analyze_product(request: AnalyzeProductRequest, background_tasks: Back
     Returns immediately with a job_id. Poll GET /api/analyze-product/{job_id} for status.
     """
     job_id = str(uuid.uuid4())
-    _analysis_jobs[job_id] = {"status": "pending", "product_url": request.product_url}
+    _save_job(job_id, {"status": "pending", "product_url": request.product_url})
     background_tasks.add_task(_run_analysis_background, job_id, request.product_url)
     return {
         "status": "queued",
@@ -108,7 +135,7 @@ async def analyze_product(request: AnalyzeProductRequest, background_tasks: Back
 @router.get("/analyze-product/{job_id}", response_model=dict)
 async def get_analysis_status(job_id: str):
     """Get the status of a product analysis job."""
-    job = _analysis_jobs.get(job_id)
+    job = _load_jobs().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Analysis job not found")
     return {"job_id": job_id, **job}

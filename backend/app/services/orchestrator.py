@@ -1,9 +1,8 @@
 """Claude-powered orchestrator: main agent spawns browser-use subagents via tools.
 
-When ANTHROPIC_API_KEY and BROWSER_USE_API_KEY are set, the main Claude agent runs
-in an agentic loop with a spawn_browser_agent tool. The main agent decides when
-and how many subagents to spawn — no hardcoded Python loops. Fallback: non-agentic
-plan + execute when only browser-use is available.
+The main Claude agent runs in an agentic loop with a spawn_browser_agent tool.
+The main agent decides when and how many subagents to spawn — no hardcoded Python loops.
+Requires both ANTHROPIC_API_KEY and BROWSER_USE_API_KEY.
 """
 import asyncio
 import hashlib
@@ -35,15 +34,7 @@ class BrowserTask(BaseModel):
     starting_url: Optional[str] = None
     search_query: Optional[str] = None
     extraction_instructions: str
-    fallback_strategy: Optional[str] = None
 
-
-class ExecutionPlan(BaseModel):
-    """Claude-generated execution plan for a watch run."""
-    watch_id: str
-    run_id: str
-    tasks: List[BrowserTask]
-    estimated_duration: int = 0
 
 
 def _task_result(
@@ -98,18 +89,6 @@ class OrchestratorEngine:
             self._anthropic = Anthropic(api_key=self.config["anthropic_api_key"])
         return self._anthropic
 
-    def _has_browser_use(self) -> bool:
-        if not self.config.get("browser_use_api_key"):
-            return False
-        try:
-            from browser_use import Agent, Browser, ChatBrowserUse  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
-    def _has_anthropic(self) -> bool:
-        return bool(self.config.get("anthropic_api_key"))
-
     # ── Main entry ────────────────────────────────────────────────────
 
     async def execute_watch(self, watch_id: str, run_id: Optional[str] = None) -> Dict[str, Any]:
@@ -127,26 +106,8 @@ class OrchestratorEngine:
         tasks_fail = 0
 
         try:
-            config = watch.get("config") or {}
-            targets = config.get("targets") or [
-                {
-                    "name": watch.get("name", "default"),
-                    "description": watch.get("description") or watch.get("name", ""),
-                    "search_query": watch.get("name", ""),
-                    "extraction_instructions": "Extract the main text content of the regulation or policy.",
-                }
-            ]
-
-            if self._has_browser_use() and self._has_anthropic():
-                logger.info(f"[run={run_id}] Using agentic harness: main agent spawns browser-use subagents")
-                task_results = await self._run_agentic_harness(watch, run_id)
-            elif self._has_browser_use():
-                logger.info(f"[run={run_id}] Using browser-use with fallback plan (no Claude for planning)")
-                plan = self._plan_from_targets(watch["id"], run_id, targets)
-                task_results = await self.execute_tasks_with_retries(plan, run_id)
-            else:
-                logger.warning(f"[run={run_id}] browser-use unavailable — falling back to mock tasks")
-                task_results = await self._execute_mock_tasks(watch_id, run_id, targets)
+            logger.info(f"[run={run_id}] Using agentic harness: main agent spawns browser-use subagents")
+            task_results = await self._run_agentic_harness(watch, run_id)
 
             for tr in task_results:
                 if tr.get("status") == "success":
@@ -187,16 +148,14 @@ class OrchestratorEngine:
                     if change.get("has_changes"):
                         changes_count += 1
 
-                        # Enhanced workflow: spawn research agents to investigate the change
-                        research_findings = []
-                        if self._has_browser_use() and self._has_anthropic():
-                            logger.info(f"[run={run_id}] Change detected, spawning research agents")
-                            research_findings = await self._research_regulatory_change(
-                                watch=watch,
-                                change=change,
-                                current_snapshot=current_snapshot,
-                                previous_snapshot=previous,
-                            )
+                        # Spawn research agents to investigate the change
+                        logger.info(f"[run={run_id}] Change detected, spawning research agents")
+                        research_findings = await self._research_regulatory_change(
+                            watch=watch,
+                            change=change,
+                            current_snapshot=current_snapshot,
+                            previous_snapshot=previous,
+                        )
 
                         # Generate enhanced summaries with research context
                         regulation_title = watch.get("regulation_title") or watch.get("name", "Unknown")
@@ -400,27 +359,19 @@ Each query should target a specific aspect or source. Return ONLY a JSON array o
   ...
 ]"""
 
-        try:
-            response = client.messages.create(
-                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=2048,
-                temperature=0.5,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a research expert. Return only the JSON array.",
-            )
-            text = response.content[0].text if response.content else "[]"
-            queries = self._parse_json_from_text(text)
-            if isinstance(queries, dict) and "queries" in queries:
-                queries = queries["queries"]
-            if not isinstance(queries, list):
-                queries = []
-        except Exception:
-            logger.exception("Failed to generate research queries")
-            queries = [
-                f"{regulation_title} regulatory change news",
-                f"{regulation_title} amendment analysis",
-                f"{regulation_title} compliance guidance",
-            ]
+        response = client.messages.create(
+            model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
+            max_tokens=2048,
+            temperature=0.5,
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a research expert. Return only the JSON array.",
+        )
+        text = response.content[0].text if response.content else "[]"
+        queries = self._parse_json_from_text(text)
+        if isinstance(queries, dict) and "queries" in queries:
+            queries = queries["queries"]
+        if not isinstance(queries, list):
+            queries = []
 
         # Spawn browser agents for each query (up to 15)
         queries = queries[:15]
@@ -470,165 +421,6 @@ Each query should target a specific aspect or source. Return ONLY a JSON array o
         )
         return r.data[0] if r.data else None
 
-    # ── Execution plan ────────────────────────────────────────────────
-
-    async def create_execution_plan(self, watch: Dict[str, Any], run_id: str) -> ExecutionPlan:
-        """Use Claude to build execution plan from watch config."""
-        config = watch.get("config") or {}
-        targets = config.get("targets") or []
-        if not targets:
-            targets = [
-                {
-                    "name": watch.get("name", "default"),
-                    "description": watch.get("description") or watch.get("name", ""),
-                    "search_query": watch.get("name", ""),
-                    "extraction_instructions": "Extract the main text content of the regulation or policy.",
-                }
-            ]
-
-        client = self._get_anthropic()
-        if not client:
-            return self._plan_from_targets(watch["id"], run_id, targets)
-
-        prompt = f"""You are a compliance monitoring expert. Given this watch configuration,
-create a detailed execution plan for browser automation agents.
-
-Watch name: {watch.get('name', 'Unnamed')}
-Watch description: {watch.get('description', '')}
-Watch config:
-{json.dumps(config, indent=2)}
-
-For each target to monitor, create a specific task with:
-1. id: short unique id (e.g. target-0, target-1)
-2. target_name: display name
-3. task_description: detailed instructions for a browser agent — what to search for and what page to navigate to
-4. starting_url: a specific URL to start from (use the most authoritative government/official source). Use Google if unsure.
-5. search_query: what to search for if no direct URL
-6. extraction_instructions: what content to extract from the page
-7. fallback_strategy: alternative approach if the primary one fails
-
-Return ONLY valid JSON in this exact shape (no markdown fences):
-{{
-  "tasks": [
-    {{
-      "id": "target-0",
-      "target_name": "...",
-      "task_description": "...",
-      "starting_url": "https://...",
-      "search_query": "...",
-      "extraction_instructions": "...",
-      "fallback_strategy": "..."
-    }}
-  ],
-  "estimated_duration": 120
-}}"""
-        try:
-            response = client.messages.create(
-                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=4096,
-                temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance automation expert. Return only the JSON object, no other text or markdown fences.",
-            )
-            text = response.content[0].text if response.content else "{}"
-            plan_data = self._parse_json_from_text(text)
-            tasks = []
-            for t in plan_data.get("tasks", []):
-                try:
-                    tasks.append(BrowserTask(**t))
-                except Exception:
-                    continue
-            if tasks:
-                return ExecutionPlan(
-                    watch_id=str(watch["id"]),
-                    run_id=run_id,
-                    tasks=tasks,
-                    estimated_duration=plan_data.get("estimated_duration", 60),
-                )
-        except Exception:
-            logger.exception("Failed to create Claude execution plan, falling back to targets")
-
-        return self._plan_from_targets(watch["id"], run_id, targets)
-
-    def _plan_from_targets(self, watch_id: str, run_id: str, targets: List[Dict[str, Any]]) -> ExecutionPlan:
-        """Build plan directly from watch targets when Claude is unavailable."""
-        tasks = []
-        for i, t in enumerate(targets):
-            tasks.append(
-                BrowserTask(
-                    id=t.get("id") or f"target-{i}",
-                    target_name=t.get("name", f"target-{i}"),
-                    task_description=t.get("description", t.get("name", "")),
-                    starting_url=t.get("starting_url"),
-                    search_query=t.get("search_query", t.get("name", "")),
-                    extraction_instructions=t.get("extraction_instructions", "Extract the main text content."),
-                    fallback_strategy=t.get("fallback_strategy"),
-                )
-            )
-        return ExecutionPlan(watch_id=str(watch_id), run_id=run_id, tasks=tasks, estimated_duration=60)
-
-    # ── Task execution ────────────────────────────────────────────────
-
-    async def execute_tasks_with_retries(self, plan: ExecutionPlan, run_id: str) -> List[Dict[str, Any]]:
-        """Run all tasks concurrently with retries."""
-        coros = [self.execute_single_task_with_retry(t, run_id) for t in plan.tasks]
-        results = await asyncio.gather(*coros, return_exceptions=True)
-        out = []
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                task = plan.tasks[i] if i < len(plan.tasks) else None
-                out.append(_task_result(
-                    task_id=task.id if task else "unknown",
-                    target_name=task.target_name if task else "unknown",
-                    status="failed",
-                    error=str(r),
-                ))
-            else:
-                out.append(r)
-        return out
-
-    async def execute_single_task_with_retry(self, task: BrowserTask, run_id: str) -> Dict[str, Any]:
-        """Execute one browser-use task with retries and self-healing."""
-        max_retries = 3
-
-        for attempt in range(max_retries):
-            try:
-                result = await self.execute_browser_use_task(task)
-                return _task_result(
-                    task_id=task.id,
-                    target_name=task.target_name,
-                    status="success",
-                    content=result.get("content", ""),
-                    content_hash=result.get("content_hash", ""),
-                    url=result.get("url", ""),
-                    screenshot_url=result.get("screenshot_url"),
-                    agent_thoughts=result.get("agent_thoughts"),
-                )
-            except Exception as e:
-                logger.warning(f"[task={task.id}] Attempt {attempt+1}/{max_retries} failed: {e}")
-                if attempt == max_retries - 1:
-                    # Last resort: try self-healing via Claude
-                    adapted = await self.adapt_task(task, e)
-                    if adapted:
-                        try:
-                            result = await self.execute_browser_use_task(adapted)
-                            return _task_result(
-                                task_id=task.id,
-                                target_name=task.target_name,
-                                status="success",
-                                content=result.get("content", ""),
-                                content_hash=result.get("content_hash", ""),
-                                url=result.get("url", ""),
-                                screenshot_url=result.get("screenshot_url"),
-                                agent_thoughts=result.get("agent_thoughts"),
-                            )
-                        except Exception as e2:
-                            return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error=str(e2))
-                    return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error=str(e))
-                await asyncio.sleep(2 ** attempt)
-
-        return _task_result(task_id=task.id, target_name=task.target_name, status="failed", error="Max retries exceeded")
-
     async def execute_browser_use_task(self, task: BrowserTask) -> Dict[str, Any]:
         """Run one task with browser-use Agent + cloud browser."""
         from browser_use import Agent, Browser, ChatBrowserUse, Tools, ActionResult
@@ -675,7 +467,9 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
         )
 
         try:
-            history = await agent.run(max_steps=30)
+            history = await asyncio.wait_for(agent.run(max_steps=30), timeout=300.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Browser agent timed out after 5 minutes for: {task.target_name}")
         finally:
             # Ensure browser is closed
             try:
@@ -683,32 +477,7 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
             except Exception:
                 pass
 
-        # Extract content — prefer our custom save_content action
-        content = extracted_data.get("content", "")
-
-        # Fallback: try final_result
-        if not content:
-            try:
-                fr = history.final_result()
-                if isinstance(fr, str) and fr.strip():
-                    content = fr
-                elif isinstance(fr, dict) and fr.get("content"):
-                    content = fr["content"]
-            except Exception:
-                pass
-
-        # Fallback: try extracted_content (returns list of strings)
-        if not content:
-            try:
-                ec = history.extracted_content()
-                if ec:
-                    # Filter out None and empty strings
-                    parts = [str(x) for x in ec if x]
-                    content = "\n".join(parts)
-            except Exception:
-                pass
-
-        content = content.strip() or "No content extracted."
+        content = extracted_data.get("content", "").strip()
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
         # Extract URL
@@ -734,56 +503,6 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
             "screenshot_url": screenshot_url,
             "agent_thoughts": agent_thoughts,
         }
-
-    # ── Self-healing ──────────────────────────────────────────────────
-
-    async def adapt_task(self, task: BrowserTask, error: Exception) -> Optional[BrowserTask]:
-        """Use Claude to suggest an alternative task config after failure."""
-        client = self._get_anthropic()
-        if not client:
-            return None
-
-        prompt = f"""This browser automation task failed:
-
-Task: {task.task_description}
-Target: {task.target_name}
-Starting URL: {task.starting_url}
-Search Query: {task.search_query}
-Error: {str(error)}
-
-Suggest ONE alternative approach. Return ONLY valid JSON:
-{{
-  "task_description": "...",
-  "starting_url": "https://...",
-  "search_query": "...",
-  "extraction_instructions": "..."
-}}
-If no viable alternative, return {{}}.
-"""
-        try:
-            response = client.messages.create(
-                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=2048,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance automation expert. Return only JSON.",
-            )
-            text = response.content[0].text if response.content else "{}"
-            adapted = self._parse_json_from_text(text)
-            if not adapted or not adapted.get("task_description"):
-                return None
-            return BrowserTask(
-                id=task.id,
-                target_name=task.target_name,
-                task_description=adapted.get("task_description", task.task_description),
-                starting_url=adapted.get("starting_url") or task.starting_url,
-                search_query=adapted.get("search_query") or task.search_query,
-                extraction_instructions=adapted.get("extraction_instructions", task.extraction_instructions),
-                fallback_strategy=task.fallback_strategy,
-            )
-        except Exception:
-            logger.exception("adapt_task failed")
-            return None
 
     # ── Run step logging ───────────────────────────────────────────────
 
@@ -847,26 +566,3 @@ If no viable alternative, return {{}}.
                 pass
         return {}
 
-    # ── Mock fallback ─────────────────────────────────────────────────
-
-    async def _execute_mock_tasks(
-        self,
-        watch_id: str,
-        run_id: str,
-        targets: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Mock task execution when browser-use is not available."""
-        results = []
-        for i, t in enumerate(targets):
-            name = t.get("name", f"target-{i}")
-            content = f"[MOCK] Content for {name}. Install browser-use and set BROWSER_USE_API_KEY for real monitoring."
-            content_hash = hashlib.sha256(content.encode()).hexdigest()
-            results.append(_task_result(
-                task_id=t.get("id", f"target-{i}"),
-                target_name=name,
-                status="success",
-                content=content,
-                content_hash=content_hash,
-                url="https://example.com/mock",
-            ))
-        return results

@@ -11,6 +11,7 @@ import {
   globePoints,
 } from "@/lib/mockData";
 import type { ChangeEvent, RunStep } from "@/lib/types";
+import { LayoutDashboard, Radar } from "lucide-react";
 
 const RUN_STEP_NAMES: RunStep["name"][] = [
   "Searching",
@@ -97,42 +98,74 @@ export default function DashboardPage() {
   }, [isRunning]);
 
   return (
-    <div className="space-y-8 p-6 md:p-8">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-        <p className="mt-1 text-muted-foreground">
-          Mission control for your compliance watches and change detection.
-        </p>
-      </div>
-
-      <CommandBar />
-
-      <div className="grid gap-6 md:grid-cols-3">
-        <WatchesCard
-          activeJurisdiction={activeJurisdiction}
-          onRunAll={runAll}
-        />
-        <ChangesCard
-          activeJurisdiction={activeJurisdiction}
-          changes={changes}
-          setChanges={setChanges}
-        />
-        <RunsCard
-          currentRunSteps={currentRunSteps}
-          isRunning={isRunning}
-          lastFailureSummary={
-            null
-          }
-          completionRate={98}
-          falsePositiveRate={2}
+    <div className="relative min-h-screen">
+      {/* Subtle gradient background (green nighty night) */}
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        aria-hidden
+      >
+        <div
+          className="absolute inset-0 opacity-30"
+          style={{
+            background:
+              "radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,255,136,0.12), transparent 50%), radial-gradient(ellipse 60% 40% at 100% 50%, rgba(0,255,136,0.06), transparent 40%)",
+          }}
         />
       </div>
 
-      <JurisdictionGlobe
-        points={globePoints}
-        activeJurisdiction={activeJurisdiction}
-        onSelectJurisdiction={setActiveJurisdiction}
-      />
+      <div className="relative z-10 space-y-8 p-6 md:p-8">
+        {/* Header */}
+        <header className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-primary shadow-[0_0_20px_-4px_rgba(0,255,136,0.3)]">
+              <LayoutDashboard className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">
+                Dashboard
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Mission control for compliance watches and change detection
+              </p>
+            </div>
+          </div>
+        </header>
+
+        <CommandBar />
+
+        {/* Cards grid */}
+        <div className="grid gap-6 md:grid-cols-3">
+          <WatchesCard
+            activeJurisdiction={activeJurisdiction}
+            onRunAll={runAll}
+          />
+          <ChangesCard
+            activeJurisdiction={activeJurisdiction}
+            changes={changes}
+            setChanges={setChanges}
+          />
+          <RunsCard
+            currentRunSteps={currentRunSteps}
+            isRunning={isRunning}
+            lastFailureSummary={null}
+            completionRate={98}
+            falsePositiveRate={2}
+          />
+        </div>
+
+        {/* Jurisdiction Radar - centered, prominent */}
+        <section className="flex flex-col gap-4">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Radar className="h-4 w-4 text-primary" />
+            <span className="text-sm font-medium">Global coverage</span>
+          </div>
+          <JurisdictionGlobe
+            points={globePoints}
+            activeJurisdiction={activeJurisdiction}
+            onSelectJurisdiction={setActiveJurisdiction}
+          />
+        </section>
+      </div>
     </div>
   );
 }

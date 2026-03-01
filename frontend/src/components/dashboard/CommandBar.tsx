@@ -16,7 +16,7 @@ export function CommandBar() {
           placeholder="Describe what to watch… (e.g., 'GDPR guidance for AI profiling', 'Stripe ToS', 'HIPAA tracking pixels')"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="pl-9 bg-background/50"
+          className="pl-9 border-primary/20 bg-background/60 placeholder:text-muted-foreground focus-visible:ring-primary/50 focus-visible:shadow-[0_0_0_3px_rgba(0,255,136,0.15)]"
         />
       </div>
       <Button className="shrink-0">Create watch</Button>

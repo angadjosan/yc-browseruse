@@ -9,7 +9,6 @@ Git-like system.
 Emphasize how big of a problem it is - 250 changes a day.
 Humans miss small stuff - make sure we TRACK the smaller changes. We get the small stuff. Super detailed and precise reporting.
 
-Magnus and Luka - post it on twitter
 
 Magnus made a demo of this stuff before. 
 
@@ -22,11 +21,13 @@ Here's what a strong demo looks like for this product: TRY IT ON AGENTMAIL.
 3. Show me the ticket it created, with the diff and the impact memo already written.
 4. Ask me: "Would you rather find out from a lawyer, or from this?"
 
-Eventually get it to a point where it can actually go through your entire product and find use cases. This would be super useful.
-- If we get a video demo of this, it’s over.
-
 need to be able to justify our architecture - why claude with browseruse subagents
 
-Post about YC
-
 Try it on demo use case - make it see the diff, actually get a full linear issue + slack setup.
+
+1. make it work
+2. do better UX (claude + browser use streaming)
+3. do better prompt engineering
+Magnus and Luka - post it on twitter
+
+better linear / slack integration

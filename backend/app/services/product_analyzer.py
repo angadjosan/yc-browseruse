@@ -23,53 +23,86 @@ def _noop_log(msg: str) -> None:
 
 
 def _extract_history_steps(history: Any, log: LogFn) -> None:
-    """Pull every available detail out of a browser-use AgentHistory and log it."""
+    """Pull every available detail out of a browser-use AgentHistory and log it — FULL output, no truncation."""
+
     # Log all URLs visited
     try:
         urls = history.urls()
         if urls:
-            for u in urls:
-                log(f"  Visited: {u}")
+            log(f"  URLs visited ({len(urls)}):")
+            for j, u in enumerate(urls):
+                log(f"    [{j+1}] {u}")
     except Exception:
         pass
 
-    # Log action results / extracted content
-    try:
-        ec = history.extracted_content()
-        if ec:
-            for i, chunk in enumerate(ec):
-                text = str(chunk).strip()
-                if text:
-                    preview = text[:300] + ("..." if len(text) > 300 else "")
-                    log(f"  Extracted [{i+1}]: {preview}")
-    except Exception:
-        pass
-
-    # Log model outputs / thoughts
+    # Log model outputs / thoughts — full text
     try:
         model_outputs = history.model_actions()
         if model_outputs:
+            log(f"  Agent steps ({len(model_outputs)}):")
             for i, action in enumerate(model_outputs):
                 if isinstance(action, dict):
-                    thought = (action.get("current_state") or {}).get("next_goal") or action.get("thought") or ""
-                    act = action.get("action") or ""
-                    if thought:
-                        log(f"  Agent thought [{i+1}]: {thought}")
+                    # Current state
+                    cs = action.get("current_state") or {}
+                    if cs.get("evaluation_previous_goal"):
+                        log(f"    [{i+1}] eval: {cs['evaluation_previous_goal']}")
+                    if cs.get("memory"):
+                        log(f"    [{i+1}] memory: {cs['memory']}")
+                    if cs.get("next_goal"):
+                        log(f"    [{i+1}] goal: {cs['next_goal']}")
+                    # Action taken
+                    act = action.get("action")
                     if act:
-                        log(f"  Agent action [{i+1}]: {act}")
+                        if isinstance(act, dict):
+                            for act_name, act_params in act.items():
+                                log(f"    [{i+1}] action: {act_name}({json.dumps(act_params, default=str)[:500]})")
+                        else:
+                            log(f"    [{i+1}] action: {str(act)[:500]}")
+                    # Fallback: thought field
+                    thought = action.get("thought") or ""
+                    if thought and not cs:
+                        log(f"    [{i+1}] thought: {thought}")
+                elif isinstance(action, list):
+                    for sub in action:
+                        if isinstance(sub, dict):
+                            for act_name, act_params in sub.items():
+                                log(f"    [{i+1}] action: {act_name}({json.dumps(act_params, default=str)[:500]})")
+                        else:
+                            log(f"    [{i+1}] {str(sub)[:500]}")
                 else:
-                    log(f"  Agent step [{i+1}]: {str(action)[:200]}")
+                    log(f"    [{i+1}] {str(action)[:500]}")
     except Exception:
         pass
 
-    # Log final result
+    # Log action results / extracted content — full text
+    try:
+        ec = history.extracted_content()
+        if ec:
+            log(f"  Extracted content ({len(ec)} chunks):")
+            for i, chunk in enumerate(ec):
+                text = str(chunk).strip()
+                if text:
+                    # Log full content, split into lines so the scroll rect shows it all
+                    lines = text.split("\n")
+                    for line in lines[:100]:
+                        log(f"    | {line}")
+                    if len(lines) > 100:
+                        log(f"    | ... ({len(lines) - 100} more lines)")
+    except Exception:
+        pass
+
+    # Log final result — full text
     try:
         fr = history.final_result()
         if fr:
             text = str(fr).strip()
             if text:
-                preview = text[:500] + ("..." if len(text) > 500 else "")
-                log(f"  Final result: {preview}")
+                log(f"  Final result ({len(text)} chars):")
+                lines = text.split("\n")
+                for line in lines[:150]:
+                    log(f"    | {line}")
+                if len(lines) > 150:
+                    log(f"    | ... ({len(lines) - 150} more lines)")
     except Exception:
         pass
 
@@ -77,17 +110,25 @@ def _extract_history_steps(history: Any, log: LogFn) -> None:
 class ProductAnalyzer:
     """Analyzes product pages and generates compliance risk watches."""
 
-    def __init__(self, log_fn: Optional[LogFn] = None):
+    def __init__(self, log_fn: Optional[LogFn] = None, on_risks_found: Optional[Callable[[List[Dict[str, Any]]], None]] = None):
         self.config = get_config()
         self.watch_service = WatchService()
         self._anthropic = None
+        self._async_anthropic = None
         self._log = log_fn or _noop_log
+        self._on_risks_found = on_risks_found
 
     def _get_anthropic(self):
         if self._anthropic is None and self.config.get("anthropic_api_key"):
             from anthropic import Anthropic
             self._anthropic = Anthropic(api_key=self.config["anthropic_api_key"])
         return self._anthropic
+
+    def _get_async_anthropic(self):
+        if self._async_anthropic is None and self.config.get("anthropic_api_key"):
+            from anthropic import AsyncAnthropic
+            self._async_anthropic = AsyncAnthropic(api_key=self.config["anthropic_api_key"])
+        return self._async_anthropic
 
     def _has_browser_use(self) -> bool:
         return bool(self.config.get("browser_use_api_key"))
@@ -169,7 +210,11 @@ Use the save_product_info action to save your findings."""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
         log(f"Launching browser agent (cloud={use_cloud}) → {product_url}")
-        log(f"Max steps: 30")
+        log(f"Max steps: 10, timeout: 300s")
+        log(f"─── BU agent task prompt ───")
+        for line in task_prompt.strip().split("\n"):
+            log(f"  > {line}")
+        log(f"─── End task prompt ───")
         browser = Browser(headless=True, use_cloud=use_cloud)
         llm = ChatBrowserUse()
 
@@ -183,7 +228,7 @@ Use the save_product_info action to save your findings."""
 
         try:
             log("Agent running...")
-            history = await asyncio.wait_for(agent.run(max_steps=30), timeout=300.0)
+            history = await asyncio.wait_for(agent.run(max_steps=10), timeout=300.0)
             log("Agent finished — extracting results")
             _extract_history_steps(history, log)
         except asyncio.TimeoutError:
@@ -218,7 +263,7 @@ Use the save_product_info action to save your findings."""
     ) -> List[Dict[str, Any]]:
         """Step 2: Use Claude to analyze product and generate compliance risks."""
         log = self._log
-        client = self._get_anthropic()
+        client = self._get_async_anthropic()
         if not client:
             raise RuntimeError("ANTHROPIC_API_KEY required for risk analysis")
 
@@ -261,7 +306,13 @@ For EACH identified risk, provide:
 - check_interval_seconds: How often to check (3600=hourly, 86400=daily, 604800=weekly)
 - initial_search_query: What to search for to find current regulation state
 
-Return ONLY valid JSON array (no markdown fences):
+CRITICAL: Your response must be ONLY the raw JSON array. Nothing else.
+- No markdown (no ``` or ```json)
+- No explanation, no preamble, no "Here is the JSON"
+- No text before the opening [ or after the closing ]
+- Your entire response must be parseable as JSON. Start with [ and end with ].
+
+Format:
 [
   {{
     "regulation_title": "...",
@@ -274,25 +325,52 @@ Return ONLY valid JSON array (no markdown fences):
   }}
 ]
 
-Be thorough - aim for 10-20 risks minimum, including both major and minor regulatory exposures."""
+Be thorough - aim for 10-20 risks minimum, including both major and minor regulatory exposures. Output ONLY the JSON array."""
+
+        # Log the full prompt being sent to Claude
+        log(f"─── Claude prompt ({len(prompt)} chars) ───")
+        for line in prompt.split("\n"):
+            log(f"  > {line}")
+        log("─── End prompt ───")
 
         try:
-            response = client.messages.create(
+            system = (
+                "You are a compliance expert. Your response must be exclusively a single JSON array. "
+                "Do not include any markdown, code fences, explanation, or text before or after the array. "
+                "Your entire reply must start with '[' and end with ']' and be valid JSON only."
+            )
+            response = await client.messages.create(
                 model=model,
                 max_tokens=8192,
                 temperature=0.2,
                 messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance expert. Return only the JSON array, no other text or markdown fences.",
+                system=system,
             )
-            text = response.content[0].text if response.content else "[]"
-            log(f"Claude responded — {len(text)} chars, parsing risks...")
+            text = ""
+            if response.content:
+                for block in response.content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text += block.get("text", "") or ""
+                    elif getattr(block, "text", None):
+                        text += block.text
+            text = text or "[]"
+            log(f"Claude response ({len(text)} chars)")
+            log("Parsing risks...")
             risks = self._parse_json_array(text)
             log(f"Parsed {len(risks)} risks from Claude response")
 
             for i, risk in enumerate(risks):
                 title = risk.get("regulation_title", "Unknown")
                 jurisdiction = risk.get("jurisdiction", "")
+                rationale = risk.get("risk_rationale", "")
                 log(f"  Risk {i+1}/{len(risks)}: {title} ({jurisdiction})")
+                if rationale:
+                    log(f"    Rationale: {rationale}")
+
+            # Push risks to frontend immediately so they appear during regulation fetching
+            if self._on_risks_found:
+                self._on_risks_found(risks)
 
             # Fetch current state for all risks in parallel
             log("─── Fetching current regulation state for each risk ───")
@@ -356,6 +434,11 @@ Steps:
 4. Use save_regulation_state to save the text
 
 Extract ALL relevant regulatory language."""
+
+        log(f"  ─── BU regulation scraper task prompt ───")
+        for line in task_prompt.strip().split("\n"):
+            log(f"    > {line}")
+        log(f"  ─── End task prompt ───")
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
         browser = Browser(headless=True, use_cloud=use_cloud)
@@ -450,20 +533,149 @@ Extract ALL relevant regulatory language."""
         log(f"All {len(watches)} watches created successfully")
         return watches
 
+    def _find_matching_bracket(self, s: str, open_pos: int) -> int:
+        """Return index of matching ']' for '[' at open_pos, or -1. Handles nested brackets."""
+        depth = 0
+        in_string = None
+        escape = False
+        i = open_pos + 1
+        while i < len(s):
+            c = s[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if c == "\\" and in_string:
+                escape = True
+                i += 1
+                continue
+            if in_string:
+                if c == in_string:
+                    in_string = None
+                i += 1
+                continue
+            if c in ('"', "'"):
+                in_string = c
+                i += 1
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                if depth == 0:
+                    return i
+                depth -= 1
+            i += 1
+        return -1
+
+    def _extract_json_array_candidates(self, raw: str) -> List[str]:
+        """Return multiple candidate substrings that might be the JSON array. Caller will try to parse each."""
+        import re
+        candidates: List[str] = []
+        # 1) Markdown code blocks (any fence)
+        for pattern in (r"```(?:json)?\s*([\s\S]*?)```", r"~~~(?:json)?\s*([\s\S]*?)~~~"):
+            for m in re.finditer(pattern, raw, re.IGNORECASE):
+                candidates.append(m.group(1).strip())
+        # 2) First '[' with bracket-matched ']'
+        start = raw.find("[")
+        if start != -1:
+            end = self._find_matching_bracket(raw, start)
+            if end != -1:
+                candidates.append(raw[start : end + 1])
+        # 3) Last ']' backwards: find last ']' then find matching '[' (scan backwards by finding first '[' that matches)
+        last_close = raw.rfind("]")
+        if last_close != -1:
+            depth = 0
+            for i in range(last_close - 1, -1, -1):
+                c = raw[i]
+                if c == "]":
+                    depth += 1
+                elif c == "[":
+                    if depth == 0:
+                        candidates.append(raw[i : last_close + 1])
+                        break
+                    depth -= 1
+        # 4) Any [ ... ] that contains "regulation_title" (likely our array)
+        for m in re.finditer(r"\[\s*\{[^[]*\"regulation_title\"", raw):
+            start = m.start()
+            end = self._find_matching_bracket(raw, start)
+            if end != -1:
+                candidates.append(raw[start : end + 1])
+        return candidates
+
+    def _try_fix_json(self, s: str) -> str:
+        """Apply common fixes so invalid JSON might become valid."""
+        s = s.strip()
+        # Trailing comma before ] or }
+        import re
+        s = re.sub(r",\s*\]", "]", s)
+        s = re.sub(r",\s*}", "}", s)
+        return s
+
     def _parse_json_array(self, text: str) -> List[Dict[str, Any]]:
-        """Extract JSON array from text that may contain markdown fences or prose."""
-        text = text.strip()
-        if "```" in text:
-            import re
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-            if match:
-                text = match.group(1).strip()
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON: {e}")
-                pass
+        """Extract and parse the JSON array from Claude output with high tolerance for wrappers and noise."""
+        if not text or not text.strip():
+            return []
+        raw = text.strip().strip("\ufeff")  # BOM
+        # Normalize: sometimes stream ends mid-string
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+
+        candidates = self._extract_json_array_candidates(raw)
+        if not candidates:
+            # Last resort: any substring that looks like [{ ... }]
+            start = raw.find("[{")
+            if start != -1:
+                end = self._find_matching_bracket(raw, start)
+                if end != -1:
+                    candidates.append(raw[start : end + 1])
+        if not candidates and "[" in raw:
+            # Maybe bracket matching failed (e.g. escaped quotes). Use first [ to last ].
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if end > start:
+                candidates.append(raw[start : end + 1])
+        if not candidates:
+            # Strip control chars and try again (sometimes stream has stray bytes)
+            cleaned = "".join(c for c in raw if c == "\n" or c == "\t" or not (ord(c) < 32 or ord(c) == 127))
+            if cleaned != raw:
+                candidates = self._extract_json_array_candidates(cleaned)
+        if not candidates:
+            logger.warning(
+                "No JSON array candidate found in Claude response (len=%d). Preview: %s",
+                len(raw),
+                raw[:500].replace("\n", " "),
+            )
+            return []
+
+        for candidate in candidates:
+            if len(candidate) < 10:
+                continue
+            for s in (candidate, self._try_fix_json(candidate)):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        if all(isinstance(x, dict) for x in parsed):
+                            return parsed
+                        # Mixed list: take only dict items
+                        return [x for x in parsed if isinstance(x, dict)]
+                except json.JSONDecodeError as e:
+                    # Truncated stream: try closing open brackets/braces
+                    if e.pos is not None and e.pos >= max(0, len(s) - 20):
+                        for suffix in ("]", '"]}', '"]}]', "}]"):
+                            try:
+                                fixed = s[: e.pos].rstrip()
+                                if fixed.endswith(","):
+                                    fixed = fixed[:-1]
+                                parsed = json.loads(fixed + suffix)
+                                if isinstance(parsed, list):
+                                    out = [x for x in parsed if isinstance(x, dict)]
+                                    if out:
+                                        return out
+                            except (json.JSONDecodeError, IndexError):
+                                continue
+                    continue
+        logger.warning(
+            "All JSON candidates failed to parse (tried %d). First candidate preview: %s",
+            len(candidates),
+            candidates[0][:300].replace("\n", " ") if candidates else "",
+        )
         return []

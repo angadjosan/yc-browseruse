@@ -21,9 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 def _start_scheduler():
-    """Start APScheduler to run active watches on their cron schedules."""
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from apscheduler.triggers.cron import CronTrigger
+    """Start APScheduler to run active watches on their cron schedules (optional dependency)."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+    except ImportError:
+        logger.warning("apscheduler not installed — scheduled watch runs disabled. Install with: pip install apscheduler")
+        return None
 
     scheduler = AsyncIOScheduler()
 
@@ -78,7 +82,8 @@ def _start_scheduler():
 async def lifespan(app: FastAPI):
     scheduler = _start_scheduler()
     yield
-    scheduler.shutdown(wait=False)
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(

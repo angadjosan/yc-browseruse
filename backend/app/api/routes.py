@@ -1,9 +1,11 @@
 """FastAPI route definitions."""
 import asyncio
 import json
+import logging
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
@@ -50,6 +52,22 @@ def _save_job(job_id: str, data: Dict[str, Any]) -> None:
         pass
 
 
+class _CallbackLogHandler(logging.Handler):
+    """Forwards log records to a callback (e.g. to persist in job logs for the /analyze UI)."""
+
+    def __init__(self, callback: Callable[[str], None]):
+        super().__init__()
+        self._callback = callback
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            if msg:
+                self._callback(msg)
+        except Exception:
+            pass
+
+
 class AnalyzeProductRequest(BaseModel):
     """Request to analyze a product URL and create compliance watches."""
     product_url: str
@@ -64,7 +82,6 @@ async def _execute_watch_background(watch_id: str, run_id: Optional[str] = None)
 
 async def _run_analysis_background(job_id: str, product_url: str):
     """Background task: run product analysis and update job store."""
-    import time
 
     def _log(msg: str):
         jobs = _load_jobs()
@@ -80,15 +97,56 @@ async def _run_analysis_background(job_id: str, product_url: str):
     # Initialize job as running and empty logs
     _save_job(job_id, {"status": "running", "product_url": product_url, "logs": []})
 
-    analyzer = ProductAnalyzer(log_fn=_log)
+    def _on_risks(risks: list):
+        """Push risks into the job store immediately so the frontend can display them."""
+        existing = _load_jobs().get(job_id, {})
+        existing["risks_identified"] = len(risks)
+        existing["risks"] = [
+            {
+                "regulation_title": r.get("regulation_title", ""),
+                "risk_rationale": r.get("risk_rationale", ""),
+                "jurisdiction": r.get("jurisdiction", ""),
+                "scope": r.get("scope", ""),
+                "source_url": r.get("source_url", ""),
+                "check_interval_seconds": r.get("check_interval_seconds", 86400),
+            }
+            for r in risks
+        ]
+        _save_job(job_id, existing)
+
+    # Capture browser_use library logs (agent steps, navigate, click, etc.) into job logs
+    # so they show up on the /analyze route when the frontend polls.
+    bu_logger = logging.getLogger("browser_use")
+    prev_level = bu_logger.level
+    bu_logger.setLevel(logging.INFO)
+    handler = _CallbackLogHandler(_log)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    bu_logger.addHandler(handler)
+    try:
+        await _run_analysis_with_handler(job_id, product_url, _log, _on_risks)
+    finally:
+        bu_logger.removeHandler(handler)
+        bu_logger.setLevel(prev_level)
+
+
+async def _run_analysis_with_handler(
+    job_id: str, product_url: str, _log: Callable[[str], None], _on_risks: Callable[[list], None]
+):
+    """Run product analysis (called with browser_use log handler already attached)."""
+    analyzer = ProductAnalyzer(log_fn=_log, on_risks_found=_on_risks)
     try:
         result = await analyzer.analyze_product_url(
             product_url=product_url,
             organization_id=DEFAULT_ORG_ID,
         )
+        # Preserve accumulated logs when writing final state
+        existing = _load_jobs().get(job_id, {})
+        existing_logs = existing.get("logs", [])
         _save_job(job_id, {
             "status": "completed",
             "product_url": product_url,
+            "logs": existing_logs,
             "product_info": {
                 "content_preview": result["product_info"]["content"][:500],
                 "url": result["product_info"].get("url", product_url),
@@ -110,7 +168,14 @@ async def _run_analysis_background(job_id: str, product_url: str):
         })
     except Exception as e:
         _log(f"Error: {str(e)}")
-        _save_job(job_id, {"status": "failed", "product_url": product_url, "error": str(e)})
+        existing = _load_jobs().get(job_id, {})
+        existing_logs = existing.get("logs", [])
+        _save_job(job_id, {
+            "status": "failed",
+            "product_url": product_url,
+            "logs": existing_logs,
+            "error": str(e),
+        })
 
 
 # ── Product analysis (onboarding) ───────────────────────────────────────────

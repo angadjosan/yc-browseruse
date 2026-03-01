@@ -111,7 +111,17 @@ def serialize_change_event(row: Dict[str, Any], watch: Dict[str, Any]) -> Dict[s
     scope = (watch.get("scope") or "") if watch else ""
     source_type = scope if scope in ("regulator", "vendor") else "regulator"
 
-    return {
+    # Linear ticket URL: may come from a joined evidence_bundles row
+    evidence_bundles = row.get("evidence_bundles") or []
+    if isinstance(evidence_bundles, dict):
+        evidence_bundles = [evidence_bundles]
+    linear_url = ""
+    for eb in evidence_bundles:
+        if isinstance(eb, dict) and eb.get("linear_ticket_url"):
+            linear_url = eb["linear_ticket_url"]
+            break
+
+    out: Dict[str, Any] = {
         "id": str(row["id"]),
         "watchId": str(row["watch_id"]),
         "title": watch.get("name", row.get("target_name", "")) if watch else row.get("target_name", ""),
@@ -122,6 +132,9 @@ def serialize_change_event(row: Dict[str, Any], watch: Dict[str, Any]) -> Dict[s
         "createdAt": row.get("detected_at", ""),
         "runId": str(row["run_id"]),
     }
+    if linear_url:
+        out["linearTicketUrl"] = linear_url
+    return out
 
 
 # ── Run ────────────────────────────────────────────────────────────────────

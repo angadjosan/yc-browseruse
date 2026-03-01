@@ -8,7 +8,8 @@ import { DiffViewer } from "@/components/run/DiffViewer";
 import { AgentOrchestrator } from "@/components/run/AgentOrchestrator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, ArrowLeft, Loader2, Radio } from "lucide-react";
+import { ArrowLeft, Loader2, Radio } from "lucide-react";
+import { LinearIcon } from "@/components/ui/linear-icon";
 
 function useRunWithRetry(runId: string | undefined) {
   const { data: run, error, isLoading } = useSWR(
@@ -87,24 +88,19 @@ export default function RunDetailPage() {
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {run.ticket.provider && run.ticket.url && (
-              <Badge variant="secondary">{run.ticket.provider}</Badge>
-            )}
             {run.selfHealed && <Badge variant="healthy">Self-healed</Badge>}
           </div>
         </div>
         {!isRunning && run.ticket.url && (
-          <Button asChild className="shrink-0">
-            <a
-              href={run.ticket.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="gap-2"
-            >
-              Open {run.ticket.provider === "linear" ? "Linear" : "Jira"} ticket
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          </Button>
+          <a
+            href={run.ticket.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 shrink-0 rounded-lg bg-[#5E6AD2]/10 px-4 py-2 text-sm font-medium text-[#5E6AD2] transition-colors hover:bg-[#5E6AD2]/20 border border-[#5E6AD2]/20"
+          >
+            <LinearIcon className="h-4 w-4" />
+            View Linear issue
+          </a>
         )}
       </div>
 

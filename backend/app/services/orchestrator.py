@@ -198,16 +198,25 @@ class OrchestratorEngine:
                                 change, current_snapshot, previous, run_id, change_id
                             )
                             integrations = watch.get("integrations") or {}
-                            await self.notification_hub.notify_change(
+                            notify_results = await self.notification_hub.notify_change(
                                 watch_name=watch.get("name", ""),
                                 change_summary=change.get("semantic_diff", {}).get("summary", "Content changed."),
                                 impact_level=change.get("semantic_diff", {}).get("impact_level", "medium"),
                                 linear_team_id=integrations.get("linear_team_id"),
-                                slack_channel=integrations.get("slack_channel"),
                                 evidence_url=evidence.get("diff_url"),
                                 compliance_summary=compliance_summary,
                                 change_detail_summary=change_summary,
                             )
+                            if notify_results.get("linear") and evidence.get("id"):
+                                bundle_id = evidence["id"]
+                                ticket_url = notify_results["linear"]
+                                ticket_title = notify_results.get("linear_title") or "[Compliance] change detected"
+                                await asyncio.to_thread(
+                                    lambda bid=bundle_id, url=ticket_url, tit=ticket_title: self.db.table("evidence_bundles")
+                                    .update({"linear_ticket_url": url, "ticket_title": tit})
+                                    .eq("id", bid)
+                                    .execute()
+                                )
 
         except Exception as e:
             logger.exception(f"[run={run_id}] Watch execution failed")

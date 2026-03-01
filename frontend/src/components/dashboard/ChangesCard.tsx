@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import type { ChangeEvent } from "@/lib/types";
 import { motion } from "framer-motion";
 import { ExternalLink } from "lucide-react";
+import { LinearIcon } from "@/components/ui/linear-icon";
 
 type ChangesCardProps = {
   activeJurisdiction: string | null;
@@ -60,11 +61,25 @@ export function ChangesCard({
                         </span>
                       </div>
                     </div>
-                    <Button size="sm" variant="ghost" className="shrink-0" asChild>
-                      <span>
-                        <ExternalLink className="h-3.5 w-3.5" /> Open
-                      </span>
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {c.linearTicketUrl && (
+                        <a
+                          href={c.linearTicketUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-[#5E6AD2]/10 px-2.5 py-1 text-xs font-medium text-[#5E6AD2] transition-colors hover:bg-[#5E6AD2]/20"
+                        >
+                          <LinearIcon className="h-3 w-3" />
+                          Linear
+                        </a>
+                      )}
+                      <Button size="sm" variant="ghost" className="shrink-0" asChild>
+                        <span>
+                          <ExternalLink className="h-3.5 w-3.5" /> Open
+                        </span>
+                      </Button>
+                    </div>
                   </div>
                 </Link>
               </li>

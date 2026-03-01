@@ -88,7 +88,6 @@ export type CreateWatchBody = {
     }>;
   };
   integrations?: {
-    slack_channel?: string;
     linear_team_id?: string;
   };
   schedule?: {

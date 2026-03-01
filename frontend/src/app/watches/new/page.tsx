@@ -24,7 +24,6 @@ export default function NewWatchPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [extractionInstructions, setExtractionInstructions] = useState("");
   const [schedule, setSchedule] = useState("0 9 * * *");
-  const [slackChannel, setSlackChannel] = useState("");
   const [linearTeamId, setLinearTeamId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +34,6 @@ export default function NewWatchPage() {
     setSubmitting(true);
     try {
       const integrations: Record<string, string> = {};
-      if (slackChannel.trim()) integrations.slack_channel = slackChannel.trim();
       if (linearTeamId.trim()) integrations.linear_team_id = linearTeamId.trim();
 
       const watch = await api.watches.create({
@@ -211,19 +209,6 @@ export default function NewWatchPage() {
           <legend className="px-2 text-sm font-medium text-[var(--foreground)]">
             Integrations (optional)
           </legend>
-          <div>
-            <label htmlFor="slack" className="block text-sm text-[var(--muted-foreground)]">
-              Slack channel
-            </label>
-            <input
-              id="slack"
-              type="text"
-              value={slackChannel}
-              onChange={(e) => setSlackChannel(e.target.value)}
-              className={inputClass}
-              placeholder="#compliance"
-            />
-          </div>
           <div>
             <label htmlFor="linear" className="block text-sm text-[var(--muted-foreground)]">
               Linear team ID

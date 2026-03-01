@@ -29,6 +29,7 @@ export type ChangeEvent = {
   sourceType: "regulator" | "vendor";
   createdAt: string;
   runId: string;
+  linearTicketUrl?: string;
 };
 
 export type RunStep = {

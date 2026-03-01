@@ -20,6 +20,7 @@ import {
   X,
   Check,
 } from "lucide-react";
+import { LinearIcon } from "@/components/ui/linear-icon";
 
 function formatInterval(seconds?: number): string {
   if (!seconds) return "daily";
@@ -317,9 +318,23 @@ export default function WatchDetailPage() {
                     </span>
                     <span className="text-sm text-foreground">{c.title}</span>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(c.createdAt).toLocaleDateString()}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {c.linearTicketUrl && (
+                      <a
+                        href={c.linearTicketUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-[#5E6AD2]/10 px-2.5 py-1 text-xs font-medium text-[#5E6AD2] transition-colors hover:bg-[#5E6AD2]/20"
+                      >
+                        <LinearIcon className="h-3 w-3" />
+                        Linear
+                      </a>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(c.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
                 </div>
                 {c.memo && (
                   <p className="mt-1 text-xs text-muted-foreground line-clamp-2">

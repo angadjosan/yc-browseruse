@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import type { ChangeEvent } from "@/lib/types";
 import { AlertTriangle } from "lucide-react";
+import { LinearIcon } from "@/components/ui/linear-icon";
 
 const severityColors = {
   high: "bg-destructive/20 text-destructive border-destructive/30",
@@ -100,9 +101,23 @@ export default function AlertsPage() {
                     </p>
                   )}
                 </div>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  View &rarr;
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  {c.linearTicketUrl && (
+                    <a
+                      href={c.linearTicketUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-[#5E6AD2]/10 px-2.5 py-1 text-xs font-medium text-[#5E6AD2] transition-colors hover:bg-[#5E6AD2]/20"
+                    >
+                      <LinearIcon className="h-3.5 w-3.5" />
+                      View in Linear
+                    </a>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    View &rarr;
+                  </span>
+                </div>
               </div>
             </Link>
           ))

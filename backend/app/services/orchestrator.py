@@ -1,7 +1,9 @@
-"""Claude-powered orchestrator: execution plans, browser-use agents, retries, self-healing, change detection.
+"""Claude-powered orchestrator: main agent spawns browser-use subagents via tools.
 
-Implements TECHNICAL_DESIGN.md: OrchestratorEngine creates execution plans via Claude,
-assigns tasks to browser-use agents (with custom Tools), retries with adapt_task on failure.
+When ANTHROPIC_API_KEY and BROWSER_USE_API_KEY are set, the main Claude agent runs
+in an agentic loop with a spawn_browser_agent tool. The main agent decides when
+and how many subagents to spawn — no hardcoded Python loops. Fallback: non-agentic
+plan + execute when only browser-use is available.
 """
 import asyncio
 import hashlib
@@ -16,6 +18,7 @@ from pydantic import BaseModel
 
 from app.config import get_config
 from app.db import get_supabase
+from app.services.agent_harness import run_main_agent_loop
 from app.services.diff_engine import DiffEngine
 from app.services.evidence_service import EvidenceService
 from app.services.notification_hub import NotificationHub
@@ -134,9 +137,8 @@ class OrchestratorEngine:
             ]
 
             if self._has_browser_use() and self._has_anthropic():
-                logger.info(f"[run={run_id}] Using real browser-use + Claude pipeline")
-                plan = await self.create_execution_plan(watch, run_id)
-                task_results = await self.execute_tasks_with_retries(plan, run_id)
+                logger.info(f"[run={run_id}] Using agentic harness: main agent spawns browser-use subagents")
+                task_results = await self._run_agentic_harness(watch, run_id)
             elif self._has_browser_use():
                 logger.info(f"[run={run_id}] Using browser-use with fallback plan (no Claude for planning)")
                 plan = self._plan_from_targets(watch["id"], run_id, targets)
@@ -183,6 +185,36 @@ class OrchestratorEngine:
                     change = await self.diff_engine.detect_changes(current_snapshot, previous)
                     if change.get("has_changes"):
                         changes_count += 1
+
+                        # Enhanced workflow: spawn research agents to investigate the change
+                        research_findings = []
+                        if self._has_browser_use() and self._has_anthropic():
+                            logger.info(f"[run={run_id}] Change detected, spawning research agents")
+                            research_findings = await self._research_regulatory_change(
+                                watch=watch,
+                                change=change,
+                                current_snapshot=current_snapshot,
+                                previous_snapshot=previous,
+                            )
+
+                        # Generate enhanced summaries with research context
+                        regulation_title = watch.get("regulation_title") or watch.get("name", "Unknown")
+                        compliance_summary = await self.diff_engine.generate_compliance_summary(
+                            change_details=change,
+                            regulation_title=regulation_title,
+                            research_findings=research_findings,
+                        )
+                        change_summary = await self.diff_engine.generate_change_summary(
+                            old_content=previous.get("content_text", ""),
+                            new_content=current_snapshot.get("content_text", ""),
+                            regulation_title=regulation_title,
+                            research_findings=research_findings,
+                        )
+
+                        # Update watch's current regulation state
+                        new_state = current_snapshot.get("content_text", "")
+                        await self.watch_service.update_regulation_state(watch_id, new_state)
+
                         change_row = {
                             "watch_id": watch_id,
                             "run_id": run_id,
@@ -191,10 +223,15 @@ class OrchestratorEngine:
                             "diff_details": {
                                 "text_diff": change.get("text_diff"),
                                 "semantic_diff": change.get("semantic_diff"),
+                                "compliance_summary": compliance_summary,
+                                "change_summary": change_summary,
+                                "research_findings": research_findings[:5] if research_findings else [],
                             },
                             "impact_level": (change.get("semantic_diff") or {}).get("impact_level", "medium"),
                         }
-                        cr = self.db.table("changes").insert(change_row).execute()
+                        cr = await asyncio.to_thread(
+                            lambda: self.db.table("changes").insert(change_row).execute()
+                        )
                         change_id = cr.data[0]["id"] if cr.data else None
                         if change_id:
                             evidence = await self.evidence_service.generate_evidence_bundle(
@@ -208,6 +245,8 @@ class OrchestratorEngine:
                                 linear_team_id=integrations.get("linear_team_id"),
                                 slack_channel=integrations.get("slack_channel"),
                                 evidence_url=evidence.get("diff_url"),
+                                compliance_summary=compliance_summary,
+                                change_detail_summary=change_summary,
                             )
 
         except Exception as e:
@@ -250,23 +289,166 @@ class OrchestratorEngine:
             agent_summary=run_agent_summary,
             agent_thoughts=run_agent_thoughts if run_agent_thoughts else None,
         )
-        self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
+        await asyncio.to_thread(
+            lambda: self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
+        )
         logger.info(f"[run={run_id}] Completed: {tasks_ok} ok, {tasks_fail} failed, {changes_count} changes")
         return {"run_id": run_id, "status": "completed", "changes": changes_count}
+
+    # ── Agentic harness ───────────────────────────────────────────────
+
+    async def _run_agentic_harness(self, watch: Dict[str, Any], run_id: str) -> List[Dict[str, Any]]:
+        """Run main Claude agent; it spawns browser-use subagents via tool calls."""
+
+        async def spawn_handler(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+            task = BrowserTask(
+                id=tool_input.get("task_id", "unknown"),
+                target_name=tool_input.get("target_name", "unknown"),
+                task_description=tool_input.get("task_description", ""),
+                starting_url=tool_input.get("starting_url"),
+                search_query=tool_input.get("search_query"),
+                extraction_instructions=tool_input.get("extraction_instructions", "Extract the main content."),
+            )
+            try:
+                result = await self.execute_browser_use_task(task)
+                return _task_result(
+                    task_id=task.id,
+                    target_name=task.target_name,
+                    status="success",
+                    content=result.get("content", ""),
+                    content_hash=result.get("content_hash", ""),
+                    url=result.get("url", ""),
+                    screenshot_url=result.get("screenshot_url"),
+                    agent_thoughts=result.get("agent_thoughts"),
+                )
+            except Exception as e:
+                logger.warning(f"[spawn] task={task.id} failed: {e}")
+                return _task_result(
+                    task_id=task.id,
+                    target_name=task.target_name,
+                    status="failed",
+                    error=str(e),
+                )
+
+        return await run_main_agent_loop(
+            watch=watch,
+            run_id=run_id,
+            spawn_handler=spawn_handler,
+            max_turns=20,
+        )
+
+    async def _research_regulatory_change(
+        self,
+        watch: Dict[str, Any],
+        change: Dict[str, Any],
+        current_snapshot: Dict[str, Any],
+        previous_snapshot: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Spawn up to 15 browser-use agents to research a detected regulatory change.
+
+        Agents search for:
+        - News articles about the change
+        - Official guidance documents
+        - Consulting firm analyses
+        - Reuters/press releases
+        - Industry commentary
+        """
+        client = self._get_anthropic()
+        if not client:
+            return []
+
+        semantic_diff = change.get("semantic_diff") or {}
+        regulation_title = watch.get("regulation_title") or watch.get("name", "Unknown")
+
+        # Use Claude to generate research queries
+        prompt = f"""A regulatory change has been detected in: {regulation_title}
+
+CHANGE SUMMARY:
+{semantic_diff.get('summary', 'Content has changed')}
+
+IMPACT LEVEL: {semantic_diff.get('impact_level', 'medium')}
+
+Generate 10-15 specific search queries to research this change. Find information from:
+1. News articles (Reuters, Bloomberg, industry publications)
+2. Official guidance documents and announcements
+3. Legal analysis from consulting firms
+4. Government press releases
+5. Industry expert commentary
+
+Each query should target a specific aspect or source. Return ONLY a JSON array of queries (no markdown):
+[
+  "query 1",
+  "query 2",
+  ...
+]"""
+
+        try:
+            response = client.messages.create(
+                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
+                max_tokens=2048,
+                temperature=0.5,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a research expert. Return only the JSON array.",
+            )
+            text = response.content[0].text if response.content else "[]"
+            queries = self._parse_json_from_text(text)
+            if isinstance(queries, dict) and "queries" in queries:
+                queries = queries["queries"]
+            if not isinstance(queries, list):
+                queries = []
+        except Exception:
+            logger.exception("Failed to generate research queries")
+            queries = [
+                f"{regulation_title} regulatory change news",
+                f"{regulation_title} amendment analysis",
+                f"{regulation_title} compliance guidance",
+            ]
+
+        # Spawn browser agents for each query (up to 15)
+        queries = queries[:15]
+        logger.info(f"Spawning {len(queries)} research agents")
+
+        async def research_one(query: str, index: int) -> Dict[str, Any]:
+            task = BrowserTask(
+                id=f"research-{index}",
+                target_name=f"Research: {query[:50]}",
+                task_description=f"Research this regulatory change: {query}",
+                search_query=query,
+                extraction_instructions="Extract key information about the regulatory change, its implications, expert analysis, and context.",
+            )
+            try:
+                result = await self.execute_browser_use_task(task)
+                return {
+                    "query": query,
+                    "content": result.get("content", ""),
+                    "url": result.get("url", ""),
+                    "summary": result.get("content", "")[:500],
+                }
+            except Exception as e:
+                logger.warning(f"Research agent {index} failed: {e}")
+                return {"query": query, "content": "", "url": "", "error": str(e)}
+
+        findings = await asyncio.gather(*[research_one(q, i) for i, q in enumerate(queries)])
+        # Filter out failed/empty results
+        findings = [f for f in findings if f.get("content")]
+        logger.info(f"Completed research: {len(findings)}/{len(queries)} agents succeeded")
+        return findings
 
     # ── Previous snapshot helper ──────────────────────────────────────
 
     async def _get_previous_snapshot(self, watch_id: str, current_run_id: str, target_name: str) -> Optional[Dict[str, Any]]:
         """Get the most recent snapshot for this watch+target from a PREVIOUS run (not the current one)."""
-        r = (
-            self.db.table("snapshots")
-            .select("*")
-            .eq("watch_id", watch_id)
-            .eq("target_name", target_name)
-            .neq("run_id", current_run_id)
-            .order("captured_at", desc=True)
-            .limit(1)
-            .execute()
+        r = await asyncio.to_thread(
+            lambda: (
+                self.db.table("snapshots")
+                .select("*")
+                .eq("watch_id", watch_id)
+                .eq("target_name", target_name)
+                .neq("run_id", current_run_id)
+                .order("captured_at", desc=True)
+                .limit(1)
+                .execute()
+            )
         )
         return r.data[0] if r.data else None
 
@@ -471,12 +653,11 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
             llm=llm,
             browser=browser,
             tools=tools,
-            max_steps=30,
             use_vision="auto",
         )
 
         try:
-            history = await agent.run()
+            history = await agent.run(max_steps=30)
         finally:
             # Ensure browser is closed
             try:

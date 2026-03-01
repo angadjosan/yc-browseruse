@@ -18,6 +18,20 @@ supabase start
 echo "==> Resetting database (migrations + seed)..."
 supabase db reset
 
+echo "==> Setting up backend..."
+# Setup backend venv if needed
+if [[ ! -d "$SCRIPT_DIR/backend/.venv" ]]; then
+  echo "    Creating Python virtual environment..."
+  cd "$SCRIPT_DIR/backend" && python3 -m venv .venv
+fi
+
+echo "==> Setting up frontend..."
+# Install frontend deps if needed
+if [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
+  echo "    Installing npm dependencies (this may take a minute)..."
+  cd "$SCRIPT_DIR/frontend" && npm install
+fi
+
 echo "==> Starting Redis, backend, frontend (logs in $LOG_DIR)..."
 REDIS_PID=""
 BACKEND_PID=""
@@ -41,7 +55,7 @@ trap cleanup SIGINT SIGTERM
 redis-server >> "$LOG_DIR/redis.log" 2>&1 &
 REDIS_PID=$!
 
-# Backend with reload (pip install -q so first run has deps)
+# Backend with reload (venv already created above)
 (
   cd "$SCRIPT_DIR/backend" && \
   source .venv/bin/activate && \
@@ -50,7 +64,7 @@ REDIS_PID=$!
 ) >> "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
-# Frontend with dev (reload)
+# Frontend with dev (deps already installed above)
 (
   cd "$SCRIPT_DIR/frontend" && \
   npm run dev

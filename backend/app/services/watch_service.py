@@ -1,4 +1,5 @@
 """Watch CRUD and run scheduling."""
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -27,6 +28,13 @@ class WatchService:
         watch_type: str = "custom",
         config: Optional[Dict[str, Any]] = None,
         integrations: Optional[Dict[str, Any]] = None,
+        regulation_title: Optional[str] = None,
+        risk_rationale: Optional[str] = None,
+        jurisdiction: Optional[str] = None,
+        scope: Optional[str] = None,
+        source_url: Optional[str] = None,
+        check_interval_seconds: Optional[int] = None,
+        current_regulation_state: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new watch. Default schedule: daily."""
         schedule = config.get("schedule", {"cron": "0 9 * * *", "timezone": "UTC"}) if config else {"cron": "0 9 * * *", "timezone": "UTC"}
@@ -43,41 +51,70 @@ class WatchService:
             "integrations": integrations or {},
             "status": "active",
         }
-        r = self.db.table("watches").insert(row).execute()
+
+        # Add regulation-specific fields if provided
+        if regulation_title is not None:
+            row["regulation_title"] = regulation_title
+        if risk_rationale is not None:
+            row["risk_rationale"] = risk_rationale
+        if jurisdiction is not None:
+            row["jurisdiction"] = jurisdiction
+        if scope is not None:
+            row["scope"] = scope
+        if source_url is not None:
+            row["source_url"] = source_url
+        if check_interval_seconds is not None:
+            row["check_interval_seconds"] = check_interval_seconds
+        if current_regulation_state is not None:
+            row["current_regulation_state"] = current_regulation_state
+
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watches").insert(row).execute()
+        )
         if not r.data:
             raise ValueError("Failed to create watch")
         return r.data[0]
 
     async def get_watch(self, watch_id: str) -> Optional[Dict[str, Any]]:
-        r = self.db.table("watches").select("*").eq("id", watch_id).execute()
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watches").select("*").eq("id", watch_id).execute()
+        )
         return r.data[0] if r.data else None
 
     async def list_watches(self, organization_id: str) -> List[Dict[str, Any]]:
-        r = (
-            self.db.table("watches")
-            .select("*")
-            .eq("organization_id", organization_id)
-            .order("created_at", desc=True)
-            .execute()
+        r = await asyncio.to_thread(
+            lambda: (
+                self.db.table("watches")
+                .select("*")
+                .eq("organization_id", organization_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
         )
         return r.data or []
 
     async def update_watch(self, watch_id: str, **kwargs) -> Optional[Dict[str, Any]]:
-        r = self.db.table("watches").update(kwargs).eq("id", watch_id).execute()
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watches").update(kwargs).eq("id", watch_id).execute()
+        )
         return r.data[0] if r.data else None
 
     async def delete_watch(self, watch_id: str) -> bool:
-        r = self.db.table("watches").delete().eq("id", watch_id).execute()
+        await asyncio.to_thread(
+            lambda: self.db.table("watches").delete().eq("id", watch_id).execute()
+        )
         return True
 
     async def get_watch_runs(self, watch_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        r = (
-            self.db.table("watch_runs")
-            .select("*")
-            .eq("watch_id", watch_id)
-            .order("started_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
+        r = await asyncio.to_thread(
+            lambda: (
+                self.db.table("watch_runs")
+                .select("*")
+                .eq("watch_id", watch_id)
+                .order("started_at", desc=True)
+                .range(offset, offset + limit - 1)
+                .execute()
+            )
         )
         return r.data or []
 
@@ -87,7 +124,9 @@ class WatchService:
         status: str = "running",
     ) -> Dict[str, Any]:
         row = {"watch_id": watch_id, "status": status}
-        r = self.db.table("watch_runs").insert(row).execute()
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watch_runs").insert(row).execute()
+        )
         if not r.data:
             raise ValueError("Failed to create run")
         return r.data[0]
@@ -127,19 +166,25 @@ class WatchService:
         if not payload:
             return await self.get_run(run_id)
         try:
-            r = self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+            r = await asyncio.to_thread(
+                lambda: self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+            )
             return r.data[0] if r.data else None
         except APIError as e:
             if e.code == "PGRST204" and ("agent_summary" in str(e) or "agent_thoughts" in str(e)):
                 for key in ("agent_summary", "agent_thoughts"):
                     payload.pop(key, None)
                 if payload:
-                    r = self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+                    r = await asyncio.to_thread(
+                        lambda: self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+                    )
                     return r.data[0] if r.data else None
             raise
 
     async def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
-        r = self.db.table("watch_runs").select("*").eq("id", run_id).execute()
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watch_runs").select("*").eq("id", run_id).execute()
+        )
         return r.data[0] if r.data else None
 
     async def save_snapshot(
@@ -163,21 +208,32 @@ class WatchService:
             "screenshot_url": screenshot_url,
             "metadata": metadata or {},
         }
-        r = self.db.table("snapshots").insert(row).execute()
+        r = await asyncio.to_thread(
+            lambda: self.db.table("snapshots").insert(row).execute()
+        )
         if not r.data:
             raise ValueError("Failed to save snapshot")
         return r.data[0]
 
     async def get_previous_snapshot(self, watch_id: str, target_name: str) -> Optional[Dict[str, Any]]:
         """Latest snapshot for this watch+target from a previous run."""
-        r = (
-            self.db.table("snapshots")
-            .select("*")
-            .eq("watch_id", watch_id)
-            .eq("target_name", target_name)
-            .order("captured_at", desc=True)
-            .limit(1)
-            .execute()
+        r = await asyncio.to_thread(
+            lambda: (
+                self.db.table("snapshots")
+                .select("*")
+                .eq("watch_id", watch_id)
+                .eq("target_name", target_name)
+                .order("captured_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        )
+        return r.data[0] if r.data else None
+
+    async def update_regulation_state(self, watch_id: str, new_state: str) -> Optional[Dict[str, Any]]:
+        """Update the current regulation state for a watch."""
+        r = await asyncio.to_thread(
+            lambda: self.db.table("watches").update({"current_regulation_state": new_state}).eq("id", watch_id).execute()
         )
         return r.data[0] if r.data else None
 

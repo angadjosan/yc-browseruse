@@ -90,13 +90,24 @@ class NotificationHub:
         slack_channel: Optional[str] = None,
         evidence_url: Optional[str] = None,
         evidence_bundle_id: Optional[str] = None,
+        compliance_summary: Optional[str] = None,
+        change_detail_summary: Optional[str] = None,
     ) -> Dict[str, str]:
         """Create Linear ticket and/or Slack message for a detected change."""
         results = {"linear": "", "slack": ""}
         title = f"[Compliance] {watch_name}: change detected"
-        description = f"Summary: {change_summary}\nImpact: {impact_level}"
+
+        # Build comprehensive description
+        description = f"## Change Summary\n{change_summary}\n\n**Impact Level:** {impact_level}\n\n"
+
+        if change_detail_summary:
+            description += f"## What Changed\n{change_detail_summary}\n\n"
+
+        if compliance_summary:
+            description += f"## How to Comply\n{compliance_summary}\n\n"
+
         if evidence_url:
-            description += f"\nEvidence: {evidence_url}"
+            description += f"\n[View Evidence]({evidence_url})"
 
         if linear_team_id:
             issue = await self.create_linear_issue(
@@ -110,9 +121,13 @@ class NotificationHub:
                 results["linear"] = issue.get("url") or issue.get("id", "")
 
         if slack_channel:
-            text = f"Compliance change: *{watch_name}* — {change_summary}. Impact: {impact_level}."
+            text = f"*Compliance change detected:* {watch_name}\n\n*Summary:* {change_summary}\n*Impact:* {impact_level}"
+            if change_detail_summary:
+                # Truncate for Slack
+                detail = change_detail_summary[:300] + ("..." if len(change_detail_summary) > 300 else "")
+                text += f"\n\n*What changed:* {detail}"
             if results["linear"]:
-                text += f" <{results['linear']}|View in Linear>"
+                text += f"\n\n<{results['linear']}|View full details in Linear>"
             ok = await self.send_slack_message(slack_channel, text)
             if ok:
                 results["slack"] = "sent"

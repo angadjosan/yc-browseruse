@@ -28,5 +28,6 @@ What makes this really unique is if we have really good prompting + AI use. work
 2. me - test it working with Linear / Slack. Eventually do it through OAuth
 
 2. do better UX (claude + browser use streaming). do a rotating circle instead of agentic run. Then you can drilldown into agentic run. Get jurisdiction radar working.
-3. do better prompt engineering. fix false negatives + false positives, only do it when real diff.
+3. do better prompt engineering. fix false negatives + false positives, only do it when real diff. limit the number of steps.
+
 Magnus and Luka - post it on twitter (need to make auth + deploy it)

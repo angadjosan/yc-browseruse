@@ -120,12 +120,11 @@ Use the save_product_info action to save your findings."""
             llm=llm,
             browser=browser,
             tools=tools,
-            max_steps=30,
             use_vision="auto",
         )
 
         try:
-            history = await agent.run()
+            history = await agent.run(max_steps=30)
         finally:
             try:
                 await browser.close()
@@ -304,12 +303,11 @@ Extract ALL relevant regulatory language."""
             llm=llm,
             browser=browser,
             tools=tools,
-            max_steps=25,
             use_vision="auto",
         )
 
         try:
-            history = await agent.run()
+            history = await agent.run(max_steps=25)
         finally:
             try:
                 await browser.close()

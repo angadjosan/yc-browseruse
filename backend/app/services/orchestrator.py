@@ -229,7 +229,9 @@ class OrchestratorEngine:
                             },
                             "impact_level": (change.get("semantic_diff") or {}).get("impact_level", "medium"),
                         }
-                        cr = self.db.table("changes").insert(change_row).execute()
+                        cr = await asyncio.to_thread(
+                            lambda: self.db.table("changes").insert(change_row).execute()
+                        )
                         change_id = cr.data[0]["id"] if cr.data else None
                         if change_id:
                             evidence = await self.evidence_service.generate_evidence_bundle(
@@ -287,7 +289,9 @@ class OrchestratorEngine:
             agent_summary=run_agent_summary,
             agent_thoughts=run_agent_thoughts if run_agent_thoughts else None,
         )
-        self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
+        await asyncio.to_thread(
+            lambda: self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
+        )
         logger.info(f"[run={run_id}] Completed: {tasks_ok} ok, {tasks_fail} failed, {changes_count} changes")
         return {"run_id": run_id, "status": "completed", "changes": changes_count}
 
@@ -434,15 +438,17 @@ Each query should target a specific aspect or source. Return ONLY a JSON array o
 
     async def _get_previous_snapshot(self, watch_id: str, current_run_id: str, target_name: str) -> Optional[Dict[str, Any]]:
         """Get the most recent snapshot for this watch+target from a PREVIOUS run (not the current one)."""
-        r = (
-            self.db.table("snapshots")
-            .select("*")
-            .eq("watch_id", watch_id)
-            .eq("target_name", target_name)
-            .neq("run_id", current_run_id)
-            .order("captured_at", desc=True)
-            .limit(1)
-            .execute()
+        r = await asyncio.to_thread(
+            lambda: (
+                self.db.table("snapshots")
+                .select("*")
+                .eq("watch_id", watch_id)
+                .eq("target_name", target_name)
+                .neq("run_id", current_run_id)
+                .order("captured_at", desc=True)
+                .limit(1)
+                .execute()
+            )
         )
         return r.data[0] if r.data else None
 
@@ -647,12 +653,11 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
             llm=llm,
             browser=browser,
             tools=tools,
-            max_steps=30,
             use_vision="auto",
         )
 
         try:
-            history = await agent.run()
+            history = await agent.run(max_steps=30)
         finally:
             # Ensure browser is closed
             try:

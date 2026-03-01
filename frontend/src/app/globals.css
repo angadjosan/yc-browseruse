@@ -2,21 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Brighter green "nighty night" palette */
 :root {
-  --background: #0a0a0a;
-  --foreground: #e5e5e5;
-  --card: #141414;
-  --card-foreground: #e5e5e5;
-  --primary: #22c55e;
-  --primary-foreground: #0a0a0a;
-  --primary-hover: #16a34a;
-  --muted: #262626;
-  --muted-foreground: #a3a3a3;
-  --border: #262626;
-  --ring: #22c55e;
-  --success: #22c55e;
-  --warning: #eab308;
-  --destructive: #ef4444;
+  --background: #060807;
+  --foreground: #f0f5f2;
+  --card: #0c100e;
+  --card-foreground: #e8f0ec;
+  --primary: #00ff88;
+  --primary-dim: #00cc6a;
+  --primary-foreground: #051008;
+  --primary-hover: #00e67a;
+  --primary-glow: rgba(0, 255, 136, 0.35);
+  --muted: #151c18;
+  --muted-foreground: #9caaa3;
+  --border: rgba(0, 255, 136, 0.18);
+  --ring: #00ff88;
+  --success: #00ff88;
+  --warning: #facc15;
+  --destructive: #f87171;
+  --accent-cyan: #22d3ee;
 }
 
 body {
@@ -29,19 +33,61 @@ body {
   .text-balance {
     text-wrap: balance;
   }
+  .glow-primary {
+    box-shadow: 0 0 24px var(--primary-glow), 0 0 48px rgba(0, 255, 136, 0.08);
+  }
+  .glow-primary-sm {
+    box-shadow: 0 0 12px rgba(0, 255, 136, 0.2);
+  }
+  .border-glow {
+    border: 1px solid var(--border);
+    box-shadow: 0 0 0 1px rgba(0, 255, 136, 0.04);
+  }
 }
 
-/* SaaS-style subtle gradients and borders */
 .gradient-border {
   border: 1px solid var(--border);
   background: linear-gradient(var(--card) 0 0) padding-box,
-    linear-gradient(135deg, rgba(34, 197, 94, 0.15), transparent 50%) border-box;
+    linear-gradient(135deg, rgba(0, 255, 136, 0.12), transparent 50%) border-box;
 }
 
 .card-hover {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .card-hover:hover {
-  border-color: rgba(34, 197, 94, 0.3);
-  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.1);
+  border-color: rgba(0, 255, 136, 0.35);
+  box-shadow: 0 0 0 1px rgba(0, 255, 136, 0.08), 0 0 20px rgba(0, 255, 136, 0.06);
+}
+
+@keyframes gradient-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes sweep-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+.sweep-ring {
+  pointer-events: none;
+  position: absolute;
+  inset: 50%;
+  width: 120%;
+  height: 120%;
+  margin: -60% 0 0 -60%;
+  border: 1px solid rgba(0, 255, 136, 0.25);
+  border-radius: 50%;
+  animation: sweep-ring 3s ease-out infinite;
 }

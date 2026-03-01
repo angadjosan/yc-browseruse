@@ -1,9 +1,6 @@
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Organizations table
+-- Organizations table (gen_random_uuid() is built-in in PostgreSQL 13+)
 CREATE TABLE organizations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     product_description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -23,7 +20,7 @@ CREATE TABLE users (
 
 -- Watches table
 CREATE TABLE watches (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
@@ -45,7 +42,7 @@ CREATE INDEX idx_watches_next_run ON watches(next_run_at) WHERE status = 'active
 
 -- Watch runs table
 CREATE TABLE watch_runs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     watch_id UUID REFERENCES watches(id) ON DELETE CASCADE,
     status VARCHAR(50) NOT NULL, -- running, completed, failed, partial
     started_at TIMESTAMPTZ DEFAULT NOW(),
@@ -64,7 +61,7 @@ CREATE INDEX idx_runs_status ON watch_runs(status);
 
 -- Snapshots table (captured content per target per run)
 CREATE TABLE snapshots (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     watch_id UUID REFERENCES watches(id) ON DELETE CASCADE,
     run_id UUID REFERENCES watch_runs(id) ON DELETE CASCADE,
     target_name VARCHAR(255) NOT NULL,
@@ -85,7 +82,7 @@ CREATE INDEX idx_snapshots_hash ON snapshots(content_hash);
 
 -- Changes table (detected diffs)
 CREATE TABLE changes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     watch_id UUID REFERENCES watches(id) ON DELETE CASCADE,
     run_id UUID REFERENCES watch_runs(id) ON DELETE CASCADE,
     target_name VARCHAR(255) NOT NULL,
@@ -104,7 +101,7 @@ CREATE INDEX idx_changes_impact ON changes(impact_level);
 
 -- Evidence bundles table
 CREATE TABLE evidence_bundles (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     change_id UUID REFERENCES changes(id) ON DELETE CASCADE,
     run_id UUID REFERENCES watch_runs(id),
     impact_memo TEXT,
@@ -121,7 +118,7 @@ CREATE INDEX idx_evidence_created ON evidence_bundles(created_at DESC);
 
 -- Notifications table (audit trail)
 CREATE TABLE notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     change_id UUID REFERENCES changes(id) ON DELETE CASCADE,
     evidence_bundle_id UUID REFERENCES evidence_bundles(id),
     channel VARCHAR(50), -- linear, slack, email
@@ -138,7 +135,7 @@ CREATE INDEX idx_notifications_status ON notifications(status);
 
 -- Integrations table
 CREATE TABLE integrations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     service VARCHAR(50), -- linear, slack, jira
     config JSONB, -- encrypted API keys, team IDs, channels

@@ -673,6 +673,15 @@ Extract ALL relevant regulatory language."""
         s = re.sub(r",\s*}", "}", s)
         return s
 
+    def _close_truncated_json(self, s: str):
+        """Yield candidate strings with closing brackets appended for truncated JSON."""
+        base = s.rstrip()
+        if base.endswith(","):
+            base = base[:-1]
+        # Try closing array and/or open objects (truncation often mid-object or mid-array)
+        for suffix in ("]", "}]", "}}]", "}}}]"):
+            yield base + suffix
+
     def _parse_json_array(self, text: str) -> List[Dict[str, Any]]:
         """Extract and parse the JSON array from Claude output with high tolerance for wrappers and noise."""
         if not text or not text.strip():
@@ -695,6 +704,9 @@ Extract ALL relevant regulatory language."""
             end = raw.rfind("]")
             if end > start:
                 candidates.append(raw[start : end + 1])
+            elif start != -1:
+                # Truncated or malformed: no closing ]. Use from first [ to end and try closing in parse loop.
+                candidates.append(raw[start:])
         if not candidates:
             # Strip control chars and try again (sometimes stream has stray bytes)
             cleaned = "".join(c for c in raw if c == "\n" or c == "\t" or not (ord(c) < 32 or ord(c) == 127))
@@ -721,7 +733,8 @@ Extract ALL relevant regulatory language."""
                         return [x for x in parsed if isinstance(x, dict)]
                 except json.JSONDecodeError as e:
                     # Truncated stream: try closing open brackets/braces
-                    if e.pos is not None and e.pos >= max(0, len(s) - 20):
+                    near_end = e.pos is not None and e.pos >= max(0, len(s) - 50)
+                    if near_end:
                         for suffix in ("]", '"]}', '"]}]', "}]"):
                             try:
                                 fixed = s[: e.pos].rstrip()
@@ -733,6 +746,17 @@ Extract ALL relevant regulatory language."""
                                     if out:
                                         return out
                             except (json.JSONDecodeError, IndexError):
+                                continue
+                    # Candidate may be truncated (no closing ]): try appending closers
+                    if not s.rstrip().endswith("]"):
+                        for closer in self._close_truncated_json(s):
+                            try:
+                                parsed = json.loads(closer)
+                                if isinstance(parsed, list):
+                                    out = [x for x in parsed if isinstance(x, dict)]
+                                    if out:
+                                        return out
+                            except json.JSONDecodeError:
                                 continue
                     continue
         logger.warning(

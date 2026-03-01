@@ -203,21 +203,15 @@ def serialize_run_lean(
 
 
 def _agent_thoughts_to_steps(thoughts: List[Any]) -> List[Dict[str, Any]]:
-    """Convert BrowserUse AgentBrain objects → RunStep[]."""
-    step_names = ["Searching", "Navigating", "Capturing", "Hashing"]
+    """Convert agent_thoughts (list of AgentThought dicts) → RunStep[]."""
     if not thoughts:
-        return [{"name": n, "status": "done"} for n in step_names]
+        return []
     out = []
-    for i, t in enumerate(thoughts[:4]):
+    for t in thoughts:
         if isinstance(t, dict):
-            name = (
-                (t.get("current_state") or {}).get("next_goal")
-                or t.get("thought")
-                or t.get("text")
-                or step_names[min(i, len(step_names) - 1)]
-            )
+            name = t.get("target_name") or t.get("name") or "Agent"
         else:
-            name = step_names[min(i, len(step_names) - 1)]
+            name = "Agent"
         out.append({
             "name": str(name)[:40],
             "status": "done",

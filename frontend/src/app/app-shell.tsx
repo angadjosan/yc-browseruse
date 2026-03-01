@@ -7,6 +7,7 @@ const nav = [
   { href: "/app", label: "Dashboard" },
   { href: "/watches", label: "Watches" },
   { href: "/alerts", label: "Alerts" },
+  { href: "/history", label: "Run History" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

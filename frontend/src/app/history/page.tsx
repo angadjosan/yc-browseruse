@@ -3,10 +3,34 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { api } from "@/lib/api";
+import type { Run } from "@/lib/types";
+
+function StatusBadge({ status }: { status: Run["status"] }) {
+  if (status === "running") {
+    return (
+      <span className="flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs font-medium text-yellow-400">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-400" />
+        running
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
+        failed
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-primary/20 px-2 py-0.5 text-xs font-medium text-primary">
+      completed
+    </span>
+  );
+}
 
 export default function HistoryPage() {
   const { data: runs = [], isLoading } = useSWR("runs/recent", api.runs.recent, {
-    refreshInterval: 15_000,
+    refreshInterval: 3_000,
   });
 
   return (
@@ -33,9 +57,7 @@ export default function HistoryPage() {
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-4">
-                  <span className="rounded-full bg-primary/20 px-2 py-0.5 text-xs font-medium text-primary">
-                    completed
-                  </span>
+                  <StatusBadge status={run.status} />
                   <Link
                     href={`/app/run/${run.id}`}
                     className="font-medium text-foreground hover:text-primary"

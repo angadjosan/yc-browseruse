@@ -212,8 +212,6 @@ Focus on:
 6. Geographic regions served
 7. Any compliance or regulatory mentions
 
-Search for additional information online if needed to get a complete picture.
-
 Use the save_product_info action to save your findings."""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
@@ -231,7 +229,7 @@ Use the save_product_info action to save your findings."""
 
         try:
             log("Agent running...")
-            history = await asyncio.wait_for(agent.run(max_steps=10), timeout=300.0)
+            history = await asyncio.wait_for(agent.run(max_steps=5), timeout=90.0)
             log("Agent finished — extracting results")
         except asyncio.TimeoutError:
             raise RuntimeError("Browser agent timed out extracting product info")
@@ -351,7 +349,7 @@ Format:
   }}
 ]
 
-Be thorough - aim for 10-20 risks minimum, including both major and minor regulatory exposures. Output ONLY the JSON array."""
+Aim for 5-8 risks covering the most significant regulatory exposures. Output ONLY the JSON array."""
 
         try:
             system = (
@@ -392,14 +390,19 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
             if self._on_risks_found:
                 self._on_risks_found(risks)
 
-            # Fetch current state for all risks in parallel
-            log("─── Fetching current regulation state for each risk ───")
+            # Fetch current state for top N risks in parallel, max 5 concurrent agents
+            FETCH_LIMIT = 8
+            sem = asyncio.Semaphore(5)
+            top_risks = risks[:FETCH_LIMIT]
+            log(f"─── Fetching regulation state for top {len(top_risks)}/{len(risks)} risks (max 5 concurrent) ───")
+
             async def _fetch_one(i_risk: tuple) -> None:
                 i, risk = i_risk
                 title = risk.get("regulation_title", "Unknown")
-                log(f"Fetching state {i+1}/{len(risks)}: {title}")
+                log(f"Fetching state {i+1}/{len(top_risks)}: {title}")
                 try:
-                    current_state = await self._fetch_initial_regulation_state(risk)
+                    async with sem:
+                        current_state = await self._fetch_initial_regulation_state(risk)
                     risk["current_state"] = current_state
                     state_preview = current_state[:200].replace("\n", " ") if current_state else "(empty)"
                     log(f"  Got {len(current_state)} chars: {state_preview}...")
@@ -407,7 +410,7 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
                     log(f"  Failed to fetch state for {title}: {e}")
                     risk["current_state"] = f"Failed to fetch: {e}"
 
-            await asyncio.gather(*[_fetch_one(ir) for ir in enumerate(risks)], return_exceptions=True)
+            await asyncio.gather(*[_fetch_one(ir) for ir in enumerate(top_risks)], return_exceptions=True)
 
             return risks
         except Exception:
@@ -442,18 +445,15 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
             nav_instruction = f'Search Google for: "{search_query}"'
             log(f"  Searching for: {search_query}")
 
-        task_prompt = f"""Find and extract the current text of this regulation:
+        task_prompt = f"""Extract a brief summary of this regulation:
 
 Regulation: {risk.get('regulation_title', 'Unknown')}
 Jurisdiction: {risk.get('jurisdiction', 'Unknown')}
 
 Steps:
 1. {nav_instruction}
-2. Navigate to the official regulation page
-3. Extract the FULL regulatory text (be thorough)
-4. Use save_regulation_state to save the text
-
-Extract ALL relevant regulatory language."""
+2. Extract the key requirements (200-400 words max)
+3. Use save_regulation_state to save the text"""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
         browser = Browser(headless=True, use_cloud=use_cloud)
@@ -468,8 +468,8 @@ Extract ALL relevant regulatory language."""
         )
 
         try:
-            log(f"  Launching regulation scraper agent (max_steps=25)")
-            history = await asyncio.wait_for(agent.run(max_steps=25), timeout=180.0)
+            log(f"  Launching regulation scraper agent (max_steps=7)")
+            history = await asyncio.wait_for(agent.run(max_steps=7), timeout=60.0)
             log(f"  Regulation scraper finished")
         except asyncio.TimeoutError:
             logger.warning(f"Timed out fetching regulation state for {risk.get('regulation_title')}")
@@ -539,17 +539,14 @@ Extract ALL relevant regulatory language."""
     ) -> List[Dict[str, Any]]:
         """Step 3: Create a watch for each identified risk."""
         log = self._log
-        watches = []
 
-        for i, risk in enumerate(risks):
-            # Validate Claude-generated URL — discard hallucinated non-URLs
+        async def _create_one(i: int, risk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             source_url = risk.get("source_url", "") or ""
             if not source_url.startswith(("http://", "https://")):
                 risk["source_url"] = ""
 
-            watch_name = f"{risk.get('regulation_title', 'Compliance Risk')}"
+            watch_name = risk.get("regulation_title", "Compliance Risk")
             description = f"{risk.get('risk_rationale', '')}\n\nJurisdiction: {risk.get('jurisdiction', 'Unknown')}\nScope: {risk.get('scope', 'Unknown')}"
-
             check_interval = risk.get("check_interval_seconds", 86400)
 
             if check_interval >= 604800:
@@ -589,9 +586,11 @@ Extract ALL relevant regulatory language."""
                 check_interval_seconds=check_interval,
                 current_regulation_state=risk.get("current_state", ""),
             )
-            watches.append(watch)
             log(f"  Watch created: {watch.get('id', '?')}")
+            return watch
 
+        results = await asyncio.gather(*[_create_one(i, risk) for i, risk in enumerate(risks)], return_exceptions=True)
+        watches = [w for w in results if isinstance(w, dict)]
         log(f"All {len(watches)} watches created successfully")
         return watches
 

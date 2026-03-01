@@ -4,7 +4,6 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
 import { api } from "@/lib/api";
-import { RunTimeline } from "@/components/run/RunTimeline";
 import { DiffViewer } from "@/components/run/DiffViewer";
 import { AgentOrchestrator } from "@/components/run/AgentOrchestrator";
 import { Button } from "@/components/ui/button";
@@ -114,14 +113,10 @@ export default function RunDetailPage() {
         /* Running mode: full-width orchestrator tree */
         <AgentOrchestrator run={run} />
       ) : (
-        /* Completed mode: timeline + diff viewer, 2 columns */
+        /* Completed mode: agent graph (clickable) + diff viewer */
         <div className="grid gap-6 lg:grid-cols-2">
-          <div>
-            <RunTimeline steps={run.steps} />
-          </div>
-          <div>
-            <DiffViewer diff={run.diff} impactMemo={run.impactMemo} />
-          </div>
+          <AgentOrchestrator run={run} />
+          <DiffViewer diff={run.diff} impactMemo={run.impactMemo} />
         </div>
       )}
     </div>

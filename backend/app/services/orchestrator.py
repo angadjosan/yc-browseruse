@@ -1,7 +1,9 @@
-"""Claude-powered orchestrator: execution plans, browser-use agents, retries, self-healing, change detection.
+"""Claude-powered orchestrator: main agent spawns browser-use subagents via tools.
 
-Implements TECHNICAL_DESIGN.md: OrchestratorEngine creates execution plans via Claude,
-assigns tasks to browser-use agents (with custom Tools), retries with adapt_task on failure.
+When ANTHROPIC_API_KEY and BROWSER_USE_API_KEY are set, the main Claude agent runs
+in an agentic loop with a spawn_browser_agent tool. The main agent decides when
+and how many subagents to spawn — no hardcoded Python loops. Fallback: non-agentic
+plan + execute when only browser-use is available.
 """
 import asyncio
 import hashlib
@@ -16,6 +18,7 @@ from pydantic import BaseModel
 
 from app.config import get_config
 from app.db import get_supabase
+from app.services.agent_harness import run_main_agent_loop
 from app.services.diff_engine import DiffEngine
 from app.services.evidence_service import EvidenceService
 from app.services.notification_hub import NotificationHub
@@ -134,9 +137,8 @@ class OrchestratorEngine:
             ]
 
             if self._has_browser_use() and self._has_anthropic():
-                logger.info(f"[run={run_id}] Using real browser-use + Claude pipeline")
-                plan = await self.create_execution_plan(watch, run_id)
-                task_results = await self.execute_tasks_with_retries(plan, run_id)
+                logger.info(f"[run={run_id}] Using agentic harness: main agent spawns browser-use subagents")
+                task_results = await self._run_agentic_harness(watch, run_id)
             elif self._has_browser_use():
                 logger.info(f"[run={run_id}] Using browser-use with fallback plan (no Claude for planning)")
                 plan = self._plan_from_targets(watch["id"], run_id, targets)
@@ -253,6 +255,48 @@ class OrchestratorEngine:
         self.db.table("watches").update({"last_run_at": datetime.utcnow().isoformat()}).eq("id", watch_id).execute()
         logger.info(f"[run={run_id}] Completed: {tasks_ok} ok, {tasks_fail} failed, {changes_count} changes")
         return {"run_id": run_id, "status": "completed", "changes": changes_count}
+
+    # ── Agentic harness ───────────────────────────────────────────────
+
+    async def _run_agentic_harness(self, watch: Dict[str, Any], run_id: str) -> List[Dict[str, Any]]:
+        """Run main Claude agent; it spawns browser-use subagents via tool calls."""
+
+        async def spawn_handler(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+            task = BrowserTask(
+                id=tool_input.get("task_id", "unknown"),
+                target_name=tool_input.get("target_name", "unknown"),
+                task_description=tool_input.get("task_description", ""),
+                starting_url=tool_input.get("starting_url"),
+                search_query=tool_input.get("search_query"),
+                extraction_instructions=tool_input.get("extraction_instructions", "Extract the main content."),
+            )
+            try:
+                result = await self.execute_browser_use_task(task)
+                return _task_result(
+                    task_id=task.id,
+                    target_name=task.target_name,
+                    status="success",
+                    content=result.get("content", ""),
+                    content_hash=result.get("content_hash", ""),
+                    url=result.get("url", ""),
+                    screenshot_url=result.get("screenshot_url"),
+                    agent_thoughts=result.get("agent_thoughts"),
+                )
+            except Exception as e:
+                logger.warning(f"[spawn] task={task.id} failed: {e}")
+                return _task_result(
+                    task_id=task.id,
+                    target_name=task.target_name,
+                    status="failed",
+                    error=str(e),
+                )
+
+        return await run_main_agent_loop(
+            watch=watch,
+            run_id=run_id,
+            spawn_handler=spawn_handler,
+            max_turns=20,
+        )
 
     # ── Previous snapshot helper ──────────────────────────────────────
 

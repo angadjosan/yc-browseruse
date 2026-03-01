@@ -27,6 +27,13 @@ class WatchService:
         watch_type: str = "custom",
         config: Optional[Dict[str, Any]] = None,
         integrations: Optional[Dict[str, Any]] = None,
+        regulation_title: Optional[str] = None,
+        risk_rationale: Optional[str] = None,
+        jurisdiction: Optional[str] = None,
+        scope: Optional[str] = None,
+        source_url: Optional[str] = None,
+        check_interval_seconds: Optional[int] = None,
+        current_regulation_state: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new watch. Default schedule: daily."""
         schedule = config.get("schedule", {"cron": "0 9 * * *", "timezone": "UTC"}) if config else {"cron": "0 9 * * *", "timezone": "UTC"}
@@ -43,6 +50,23 @@ class WatchService:
             "integrations": integrations or {},
             "status": "active",
         }
+
+        # Add regulation-specific fields if provided
+        if regulation_title is not None:
+            row["regulation_title"] = regulation_title
+        if risk_rationale is not None:
+            row["risk_rationale"] = risk_rationale
+        if jurisdiction is not None:
+            row["jurisdiction"] = jurisdiction
+        if scope is not None:
+            row["scope"] = scope
+        if source_url is not None:
+            row["source_url"] = source_url
+        if check_interval_seconds is not None:
+            row["check_interval_seconds"] = check_interval_seconds
+        if current_regulation_state is not None:
+            row["current_regulation_state"] = current_regulation_state
+
         r = self.db.table("watches").insert(row).execute()
         if not r.data:
             raise ValueError("Failed to create watch")
@@ -179,6 +203,11 @@ class WatchService:
             .limit(1)
             .execute()
         )
+        return r.data[0] if r.data else None
+
+    async def update_regulation_state(self, watch_id: str, new_state: str) -> Optional[Dict[str, Any]]:
+        """Update the current regulation state for a watch."""
+        r = self.db.table("watches").update({"current_regulation_state": new_state}).eq("id", watch_id).execute()
         return r.data[0] if r.data else None
 
     def to_watch_response(self, row: Dict[str, Any], total_runs: int = 0, total_changes: int = 0) -> Dict[str, Any]:

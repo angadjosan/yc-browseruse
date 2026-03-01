@@ -24,6 +24,13 @@ class WatchResponse(BaseModel):
     schedule: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     last_run_at: Optional[datetime] = None
+    regulation_title: Optional[str] = None
+    risk_rationale: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    scope: Optional[str] = None
+    source_url: Optional[str] = None
+    check_interval_seconds: Optional[int] = None
+    current_regulation_state: Optional[str] = None
 
     class Config:
         from_attributes = True

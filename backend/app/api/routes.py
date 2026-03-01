@@ -2,17 +2,24 @@
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 
 from app.schemas.watch import CreateWatchRequest, WatchRunSummary
 from app.schemas.evidence import EvidenceBundleResponse
 from app.services.watch_service import WatchService
 from app.services.evidence_service import EvidenceService
 from app.services.orchestrator import OrchestratorEngine
+from app.services.product_analyzer import ProductAnalyzer
 
 router = APIRouter(prefix="/api", tags=["api"])
 
 # Default org for single-tenant; in production use auth
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
+
+
+class AnalyzeProductRequest(BaseModel):
+    """Request to analyze a product URL and create compliance watches."""
+    product_url: str
 
 
 def _watch_to_response(watch: Dict[str, Any], total_runs: int = 0, total_changes: int = 0) -> dict:
@@ -28,7 +35,44 @@ def _watch_to_response(watch: Dict[str, Any], total_runs: int = 0, total_changes
         "schedule": watch.get("schedule"),
         "created_at": watch.get("created_at"),
         "last_run_at": watch.get("last_run_at"),
+        "regulation_title": watch.get("regulation_title"),
+        "risk_rationale": watch.get("risk_rationale"),
+        "jurisdiction": watch.get("jurisdiction"),
+        "scope": watch.get("scope"),
+        "source_url": watch.get("source_url"),
+        "check_interval_seconds": watch.get("check_interval_seconds"),
+        "current_regulation_state": watch.get("current_regulation_state"),
     }
+
+
+@router.post("/analyze-product", response_model=dict)
+async def analyze_product(request: AnalyzeProductRequest):
+    """Analyze a product URL and create compliance risk watches.
+
+    Workflow:
+    1. Extract product information using browser-use agent
+    2. Generate compliance risk analysis using Claude
+    3. Create watches for each identified risk
+    """
+    analyzer = ProductAnalyzer()
+    try:
+        result = await analyzer.analyze_product_url(
+            product_url=request.product_url,
+            organization_id=DEFAULT_ORG_ID,
+        )
+        return {
+            "status": "success",
+            "product_url": request.product_url,
+            "product_info": {
+                "content_preview": result["product_info"]["content"][:500],
+                "url": result["product_info"]["url"],
+            },
+            "risks_identified": len(result["risks"]),
+            "watches_created": len(result["watches"]),
+            "watches": [_watch_to_response(w) for w in result["watches"]],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/watches", response_model=dict)

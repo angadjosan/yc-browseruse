@@ -213,3 +213,130 @@ Return ONLY the JSON, no other text."""
                         break
         result["summary"] = result["summary"].strip()
         return result
+
+    async def generate_compliance_summary(
+        self,
+        change_details: Dict[str, Any],
+        regulation_title: str,
+        research_findings: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Generate AI summary of how to comply with the detected regulatory change.
+
+        Args:
+            change_details: The detected change (text_diff, semantic_diff)
+            regulation_title: Title of the regulation
+            research_findings: Optional research data from additional browser agents
+
+        Returns:
+            String summary of compliance actions to take
+        """
+        client = self._get_anthropic()
+        if not client:
+            return "Compliance analysis unavailable (Claude API not configured)."
+
+        semantic_diff = change_details.get("semantic_diff") or {}
+        research_context = ""
+        if research_findings:
+            research_context = "\n\nADDITIONAL RESEARCH FINDINGS:\n"
+            for i, finding in enumerate(research_findings[:5], 1):
+                research_context += f"\n{i}. {finding.get('summary', finding.get('content', '')[:500])}"
+
+        prompt = f"""You are a compliance expert. A regulatory change has been detected in {regulation_title}.
+
+CHANGE SUMMARY:
+{semantic_diff.get('summary', 'Content has changed')}
+
+IMPACT LEVEL: {semantic_diff.get('impact_level', 'medium')}
+
+KEY CHANGES:
+{json.dumps(semantic_diff.get('key_changes', []), indent=2)}
+
+SECTIONS AFFECTED:
+{', '.join(semantic_diff.get('sections_affected', []))}
+{research_context}
+
+Provide a clear, actionable summary of HOW TO COMPLY with this regulatory change.
+
+Focus on:
+1. Immediate actions required
+2. Timeline for compliance
+3. Resources needed
+4. Risk mitigation steps
+5. Who should be involved
+
+Be specific and practical. Return 3-5 paragraphs of actionable guidance."""
+
+        try:
+            response = client.messages.create(
+                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+                max_tokens=2048,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a compliance expert providing actionable guidance.",
+            )
+            text = response.content[0].text if response.content else ""
+            return text.strip() or "Unable to generate compliance summary."
+        except Exception:
+            logger.exception("Failed to generate compliance summary")
+            return "Error generating compliance summary."
+
+    async def generate_change_summary(
+        self,
+        old_content: str,
+        new_content: str,
+        regulation_title: str,
+        research_findings: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Generate AI summary of what changed in the regulation.
+
+        Args:
+            old_content: Previous regulation text
+            new_content: Current regulation text
+            regulation_title: Title of the regulation
+            research_findings: Optional research data from additional browser agents
+
+        Returns:
+            String summary of the change
+        """
+        client = self._get_anthropic()
+        if not client:
+            return "Change analysis unavailable (Claude API not configured)."
+
+        research_context = ""
+        if research_findings:
+            research_context = "\n\nADDITIONAL CONTEXT FROM RESEARCH:\n"
+            for i, finding in enumerate(research_findings[:5], 1):
+                research_context += f"\n{i}. {finding.get('summary', finding.get('content', '')[:500])}"
+
+        prompt = f"""Summarize the regulatory change in {regulation_title}.
+
+PREVIOUS VERSION (excerpt):
+{old_content[:3000]}
+
+CURRENT VERSION (excerpt):
+{new_content[:3000]}
+{research_context}
+
+Provide a clear, detailed summary of WHAT CHANGED.
+
+Include:
+1. What was added, removed, or modified
+2. Why the change likely occurred (context from news, guidance, etc.)
+3. Scope and applicability of the change
+4. Effective date if mentioned
+
+Be clear and factual. Return 2-4 paragraphs."""
+
+        try:
+            response = client.messages.create(
+                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+                max_tokens=2048,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a compliance expert explaining regulatory changes.",
+            )
+            text = response.content[0].text if response.content else ""
+            return text.strip() or "Unable to generate change summary."
+        except Exception:
+            logger.exception("Failed to generate change summary")
+            return "Error generating change summary."

@@ -185,6 +185,36 @@ class OrchestratorEngine:
                     change = await self.diff_engine.detect_changes(current_snapshot, previous)
                     if change.get("has_changes"):
                         changes_count += 1
+
+                        # Enhanced workflow: spawn research agents to investigate the change
+                        research_findings = []
+                        if self._has_browser_use() and self._has_anthropic():
+                            logger.info(f"[run={run_id}] Change detected, spawning research agents")
+                            research_findings = await self._research_regulatory_change(
+                                watch=watch,
+                                change=change,
+                                current_snapshot=current_snapshot,
+                                previous_snapshot=previous,
+                            )
+
+                        # Generate enhanced summaries with research context
+                        regulation_title = watch.get("regulation_title") or watch.get("name", "Unknown")
+                        compliance_summary = await self.diff_engine.generate_compliance_summary(
+                            change_details=change,
+                            regulation_title=regulation_title,
+                            research_findings=research_findings,
+                        )
+                        change_summary = await self.diff_engine.generate_change_summary(
+                            old_content=previous.get("content_text", ""),
+                            new_content=current_snapshot.get("content_text", ""),
+                            regulation_title=regulation_title,
+                            research_findings=research_findings,
+                        )
+
+                        # Update watch's current regulation state
+                        new_state = current_snapshot.get("content_text", "")
+                        await self.watch_service.update_regulation_state(watch_id, new_state)
+
                         change_row = {
                             "watch_id": watch_id,
                             "run_id": run_id,
@@ -193,6 +223,9 @@ class OrchestratorEngine:
                             "diff_details": {
                                 "text_diff": change.get("text_diff"),
                                 "semantic_diff": change.get("semantic_diff"),
+                                "compliance_summary": compliance_summary,
+                                "change_summary": change_summary,
+                                "research_findings": research_findings[:5] if research_findings else [],
                             },
                             "impact_level": (change.get("semantic_diff") or {}).get("impact_level", "medium"),
                         }
@@ -210,6 +243,8 @@ class OrchestratorEngine:
                                 linear_team_id=integrations.get("linear_team_id"),
                                 slack_channel=integrations.get("slack_channel"),
                                 evidence_url=evidence.get("diff_url"),
+                                compliance_summary=compliance_summary,
+                                change_detail_summary=change_summary,
                             )
 
         except Exception as e:
@@ -297,6 +332,103 @@ class OrchestratorEngine:
             spawn_handler=spawn_handler,
             max_turns=20,
         )
+
+    async def _research_regulatory_change(
+        self,
+        watch: Dict[str, Any],
+        change: Dict[str, Any],
+        current_snapshot: Dict[str, Any],
+        previous_snapshot: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Spawn up to 15 browser-use agents to research a detected regulatory change.
+
+        Agents search for:
+        - News articles about the change
+        - Official guidance documents
+        - Consulting firm analyses
+        - Reuters/press releases
+        - Industry commentary
+        """
+        client = self._get_anthropic()
+        if not client:
+            return []
+
+        semantic_diff = change.get("semantic_diff") or {}
+        regulation_title = watch.get("regulation_title") or watch.get("name", "Unknown")
+
+        # Use Claude to generate research queries
+        prompt = f"""A regulatory change has been detected in: {regulation_title}
+
+CHANGE SUMMARY:
+{semantic_diff.get('summary', 'Content has changed')}
+
+IMPACT LEVEL: {semantic_diff.get('impact_level', 'medium')}
+
+Generate 10-15 specific search queries to research this change. Find information from:
+1. News articles (Reuters, Bloomberg, industry publications)
+2. Official guidance documents and announcements
+3. Legal analysis from consulting firms
+4. Government press releases
+5. Industry expert commentary
+
+Each query should target a specific aspect or source. Return ONLY a JSON array of queries (no markdown):
+[
+  "query 1",
+  "query 2",
+  ...
+]"""
+
+        try:
+            response = client.messages.create(
+                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
+                max_tokens=2048,
+                temperature=0.5,
+                messages=[{"role": "user", "content": prompt}],
+                system="You are a research expert. Return only the JSON array.",
+            )
+            text = response.content[0].text if response.content else "[]"
+            queries = self._parse_json_from_text(text)
+            if isinstance(queries, dict) and "queries" in queries:
+                queries = queries["queries"]
+            if not isinstance(queries, list):
+                queries = []
+        except Exception:
+            logger.exception("Failed to generate research queries")
+            queries = [
+                f"{regulation_title} regulatory change news",
+                f"{regulation_title} amendment analysis",
+                f"{regulation_title} compliance guidance",
+            ]
+
+        # Spawn browser agents for each query (up to 15)
+        queries = queries[:15]
+        logger.info(f"Spawning {len(queries)} research agents")
+
+        async def research_one(query: str, index: int) -> Dict[str, Any]:
+            task = BrowserTask(
+                id=f"research-{index}",
+                target_name=f"Research: {query[:50]}",
+                task_description=f"Research this regulatory change: {query}",
+                search_query=query,
+                extraction_instructions="Extract key information about the regulatory change, its implications, expert analysis, and context.",
+            )
+            try:
+                result = await self.execute_browser_use_task(task)
+                return {
+                    "query": query,
+                    "content": result.get("content", ""),
+                    "url": result.get("url", ""),
+                    "summary": result.get("content", "")[:500],
+                }
+            except Exception as e:
+                logger.warning(f"Research agent {index} failed: {e}")
+                return {"query": query, "content": "", "url": "", "error": str(e)}
+
+        findings = await asyncio.gather(*[research_one(q, i) for i, q in enumerate(queries)])
+        # Filter out failed/empty results
+        findings = [f for f in findings if f.get("content")]
+        logger.info(f"Completed research: {len(findings)}/{len(queries)} agents succeeded")
+        return findings
 
     # ── Previous snapshot helper ──────────────────────────────────────
 

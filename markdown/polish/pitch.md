@@ -26,3 +26,7 @@ Eventually get it to a point where it can actually go through your entire produc
 - If we get a video demo of this, it’s over.
 
 need to be able to justify our architecture - why claude with browseruse subagents
+
+Post about YC
+
+Try it on demo use case - make it see the diff, actually get a full linear issue + slack setup.

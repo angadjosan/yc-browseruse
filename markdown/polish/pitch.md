@@ -25,6 +25,4 @@ Here's what a strong demo looks like for this product: TRY IT ON AGENTMAIL.
 Eventually get it to a point where it can actually go through your entire product and find use cases. This would be super useful.
 - If we get a video demo of this, it’s over.
 
-also, 
-
 need to be able to justify our architecture - why claude with browseruse subagents

@@ -58,6 +58,7 @@ export const api = {
 export type CreateWatchBody = {
   name: string;
   description?: string;
+  type?: string;
   config: {
     targets: Array<{
       name: string;
@@ -65,6 +66,13 @@ export type CreateWatchBody = {
       search_query?: string;
       extraction_instructions: string;
     }>;
+  };
+  integrations?: {
+    slack_channel?: string;
+    linear_team_id?: string;
+  };
+  schedule?: {
+    cron: string;
   };
 };
 
@@ -95,6 +103,20 @@ export async function getEvidenceBundle(bundleId: string): Promise<EvidenceBundl
   return res.json();
 }
 
+export type OnboardRiskRaw = {
+  regulation_title: string;
+  risk_rationale: string;
+  jurisdiction: string;
+  scope: string;
+  source_url: string;
+  check_interval_seconds: number;
+};
+
+export type OnboardLog = {
+  t: number;
+  msg: string;
+};
+
 export type OnboardStatus = {
   job_id?: string;
   status: "pending" | "running" | "completed" | "failed";
@@ -102,6 +124,8 @@ export type OnboardStatus = {
   risks_identified?: number;
   watches_created?: number;
   watches?: Watch[];
+  risks?: OnboardRiskRaw[];
+  logs?: OnboardLog[];
   product_info?: {
     content_preview: string;
     url: string;

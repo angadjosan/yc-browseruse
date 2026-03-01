@@ -45,25 +45,45 @@ async def _execute_watch_background(watch_id: str, run_id: Optional[str] = None)
 
 async def _run_analysis_background(job_id: str, product_url: str):
     """Background task: run product analysis and update job store."""
-    _analysis_jobs[job_id]["status"] = "running"
-    analyzer = ProductAnalyzer()
+    import time
+
+    job = _analysis_jobs[job_id]
+    job["status"] = "running"
+    job["logs"] = []
+
+    def _log(msg: str):
+        job["logs"].append({"t": time.time(), "msg": msg})
+
+    analyzer = ProductAnalyzer(log_fn=_log)
     try:
         result = await analyzer.analyze_product_url(
             product_url=product_url,
             organization_id=DEFAULT_ORG_ID,
         )
-        _analysis_jobs[job_id].update({
+        job["product_info"] = {
+            "content_preview": result["product_info"]["content"][:500],
+            "url": result["product_info"].get("url", product_url),
+        }
+        job["risks_identified"] = len(result["risks"])
+        job["risks"] = [
+            {
+                "regulation_title": r.get("regulation_title", ""),
+                "risk_rationale": r.get("risk_rationale", ""),
+                "jurisdiction": r.get("jurisdiction", ""),
+                "scope": r.get("scope", ""),
+                "source_url": r.get("source_url", ""),
+                "check_interval_seconds": r.get("check_interval_seconds", 86400),
+            }
+            for r in result["risks"]
+        ]
+        job.update({
             "status": "completed",
-            "product_info": {
-                "content_preview": result["product_info"]["content"][:500],
-                "url": result["product_info"]["url"],
-            },
-            "risks_identified": len(result["risks"]),
             "watches_created": len(result["watches"]),
             "watches": [serialize_watch(w) for w in result["watches"]],
         })
     except Exception as e:
-        _analysis_jobs[job_id].update({"status": "failed", "error": str(e)})
+        _log(f"Error: {str(e)}")
+        job.update({"status": "failed", "error": str(e)})
 
 
 # ── Product analysis (onboarding) ───────────────────────────────────────────

@@ -3,23 +3,42 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, X, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import {
+  X,
+  Loader2,
+  CheckCircle,
+  AlertCircle,
+  ExternalLink,
+  Globe,
+  Clock,
+} from "lucide-react";
 import { api } from "@/lib/api";
-import type { OnboardStatus } from "@/lib/api";
+import type { OnboardStatus, OnboardRiskRaw } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 type ModalState = "idle" | "input" | "loading" | "done" | "error";
 
-export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void }) {
-  const [query, setQuery] = useState("");
+function formatInterval(seconds?: number): string {
+  if (!seconds) return "daily";
+  if (seconds <= 3600) return "hourly";
+  if (seconds <= 86400) return "daily";
+  if (seconds <= 604800) return "weekly";
+  return "monthly";
+}
+
+export function CommandBar({
+  onWatchesCreated,
+}: {
+  onWatchesCreated?: () => void;
+}) {
   const [modalState, setModalState] = useState<ModalState>("idle");
   const [productUrl, setProductUrl] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<OnboardStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
-  // Poll job status
   useEffect(() => {
     if (!jobId || modalState !== "loading") return;
     pollRef.current = setInterval(async () => {
@@ -39,8 +58,14 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
         setModalState("error");
       }
     }, 2000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, [jobId, modalState, onWatchesCreated]);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [jobStatus?.logs]);
 
   const handleAnalyze = async () => {
     if (!productUrl.trim()) return;
@@ -67,27 +92,20 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
     router.push("/watches");
   };
 
+  const logs = jobStatus?.logs ?? [];
+  const risks: OnboardRiskRaw[] = jobStatus?.risks ?? [];
+
   return (
     <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Describe what to watch… (e.g., 'GDPR guidance for AI profiling', 'Stripe ToS', 'HIPAA tracking pixels')"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-9 border-primary/20 bg-background/60 placeholder:text-muted-foreground focus-visible:ring-primary/50 focus-visible:shadow-[0_0_0_3px_rgba(0,255,136,0.15)]"
-          />
-        </div>
         <Button className="shrink-0" onClick={() => setModalState("input")}>
           Analyze product
         </Button>
       </div>
 
-      {/* Onboarding modal */}
       {modalState !== "idle" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="relative w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+          <div className="relative w-full max-w-2xl max-h-[85vh] overflow-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
             <button
               onClick={closeModal}
               className="absolute right-4 top-4 text-muted-foreground hover:text-foreground"
@@ -101,7 +119,8 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
                   Analyze product for compliance risks
                 </h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Paste your product URL. Claude will identify every applicable regulation and create watches automatically.
+                  Paste your product URL. Claude will identify every applicable
+                  regulation and create watches automatically.
                 </p>
                 <div className="mt-4 flex gap-2">
                   <Input
@@ -112,8 +131,11 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
                     className="flex-1"
                     autoFocus
                   />
-                  <Button onClick={handleAnalyze} disabled={!productUrl.trim()}>
-                    Analyze →
+                  <Button
+                    onClick={handleAnalyze}
+                    disabled={!productUrl.trim()}
+                  >
+                    Analyze
                   </Button>
                 </div>
               </>
@@ -121,54 +143,152 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
 
             {modalState === "loading" && (
               <>
-                <h2 className="text-lg font-semibold text-foreground">
-                  Analyzing {productUrl}
-                </h2>
-                <div className="mt-4 space-y-3">
-                  <div className="flex items-center gap-3 text-sm">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    <span className="text-muted-foreground">
-                      {!jobStatus || jobStatus.status === "pending"
-                        ? "Starting analysis…"
-                        : jobStatus.status === "running"
-                        ? jobStatus.risks_identified
-                          ? `Identified ${jobStatus.risks_identified} risks — creating watches…`
-                          : "Scraping product page and analyzing regulations…"
-                        : "Processing…"}
-                    </span>
-                  </div>
-                  {jobStatus?.risks_identified && (
-                    <p className="text-xs text-muted-foreground pl-7">
-                      {jobStatus.risks_identified} compliance risks found so far
+                <div className="flex items-center gap-3 mb-4">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Analyzing {productUrl}
+                  </h2>
+                </div>
+
+                {/* Live logs */}
+                <div className="rounded-lg border border-border bg-background/60 p-3 max-h-48 overflow-auto font-mono text-xs space-y-1 mb-4">
+                  {logs.length === 0 && (
+                    <p className="text-muted-foreground">
+                      Starting analysis...
                     </p>
                   )}
+                  {logs.map((log, i) => (
+                    <div key={i} className="flex gap-2">
+                      <span className="text-muted-foreground shrink-0">
+                        [{new Date(log.t * 1000).toLocaleTimeString()}]
+                      </span>
+                      <span className="text-foreground">{log.msg}</span>
+                    </div>
+                  ))}
+                  <div ref={logsEndRef} />
                 </div>
+
+                {/* Show risks as they come in */}
+                {risks.length > 0 && (
+                  <div className="space-y-2 max-h-[40vh] overflow-auto">
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      {risks.length} risks identified — creating watches...
+                    </p>
+                    {risks.map((r, i) => (
+                      <div
+                        key={i}
+                        className="rounded-lg border border-border bg-muted/30 p-3 space-y-1"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm font-medium text-foreground">
+                            {r.regulation_title}
+                          </span>
+                          {r.jurisdiction && (
+                            <span className="flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary shrink-0">
+                              <Globe className="h-3 w-3" />
+                              {r.jurisdiction}
+                            </span>
+                          )}
+                        </div>
+                        {r.risk_rationale && (
+                          <p className="text-xs text-muted-foreground">
+                            {r.risk_rationale}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
 
             {modalState === "done" && jobStatus && (
               <>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 mb-2">
                   <CheckCircle className="h-5 w-5 text-primary" />
-                  <h2 className="text-lg font-semibold text-foreground">Analysis complete</h2>
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Analysis complete
+                  </h2>
                 </div>
-                <div className="mt-3 space-y-1 text-sm text-muted-foreground">
-                  <p>
-                    <span className="font-medium text-foreground">{jobStatus.risks_identified ?? 0}</span> compliance risks identified
-                  </p>
-                  <p>
-                    <span className="font-medium text-foreground">{jobStatus.watches_created ?? 0}</span> watches created
-                  </p>
-                  {jobStatus.product_info?.url && (
-                    <p className="text-xs truncate">
-                      Analyzed:{" "}
-                      <span className="text-primary">{jobStatus.product_info.url}</span>
-                    </p>
-                  )}
+                <div className="flex gap-4 text-sm text-muted-foreground mb-3">
+                  <span>
+                    <span className="font-medium text-foreground">
+                      {jobStatus.risks_identified ?? 0}
+                    </span>{" "}
+                    risks
+                  </span>
+                  <span>
+                    <span className="font-medium text-foreground">
+                      {jobStatus.watches_created ?? 0}
+                    </span>{" "}
+                    watches
+                  </span>
                 </div>
-                <div className="mt-4 flex gap-2">
+
+                <details className="mb-3">
+                  <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                    View logs ({logs.length})
+                  </summary>
+                  <div className="mt-2 rounded-lg border border-border bg-background/60 p-3 max-h-32 overflow-auto font-mono text-xs space-y-1">
+                    {logs.map((log, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span className="text-muted-foreground shrink-0">
+                          [{new Date(log.t * 1000).toLocaleTimeString()}]
+                        </span>
+                        <span className="text-foreground">{log.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+
+                {risks.length > 0 && (
+                  <div className="space-y-2 max-h-[40vh] overflow-auto mb-4">
+                    {risks.map((r, i) => (
+                      <div
+                        key={i}
+                        className="rounded-lg border border-border bg-muted/30 p-3 space-y-1"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm font-medium text-foreground">
+                            {r.regulation_title}
+                          </span>
+                          {r.jurisdiction && (
+                            <span className="flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary shrink-0">
+                              <Globe className="h-3 w-3" />
+                              {r.jurisdiction}
+                            </span>
+                          )}
+                        </div>
+                        {r.risk_rationale && (
+                          <p className="text-xs text-muted-foreground">
+                            {r.risk_rationale}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                          {r.source_url && (
+                            <a
+                              href={r.source_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-0.5 text-primary hover:underline"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Source
+                            </a>
+                          )}
+                          <span className="flex items-center gap-0.5">
+                            <Clock className="h-3 w-3" />
+                            {formatInterval(r.check_interval_seconds)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
                   <Button onClick={goToWatches} className="flex-1">
-                    View watches →
+                    View watches
                   </Button>
                   <Button variant="outline" onClick={closeModal}>
                     Close
@@ -181,13 +301,36 @@ export function CommandBar({ onWatchesCreated }: { onWatchesCreated?: () => void
               <>
                 <div className="flex items-center gap-2">
                   <AlertCircle className="h-5 w-5 text-destructive" />
-                  <h2 className="text-lg font-semibold text-foreground">Analysis failed</h2>
+                  <h2 className="text-lg font-semibold text-foreground">
+                    Analysis failed
+                  </h2>
                 </div>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  {jobStatus?.error ?? "Something went wrong. Please try again."}
+                  {jobStatus?.error ??
+                    "Something went wrong. Please try again."}
                 </p>
+                {logs.length > 0 && (
+                  <details className="mt-3">
+                    <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                      View logs ({logs.length})
+                    </summary>
+                    <div className="mt-2 rounded-lg border border-border bg-background/60 p-3 max-h-32 overflow-auto font-mono text-xs space-y-1">
+                      {logs.map((log, i) => (
+                        <div key={i} className="flex gap-2">
+                          <span className="text-muted-foreground shrink-0">
+                            [{new Date(log.t * 1000).toLocaleTimeString()}]
+                          </span>
+                          <span className="text-foreground">{log.msg}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 <div className="mt-4 flex gap-2">
-                  <Button onClick={() => setModalState("input")} className="flex-1">
+                  <Button
+                    onClick={() => setModalState("input")}
+                    className="flex-1"
+                  >
                     Try again
                   </Button>
                   <Button variant="outline" onClick={closeModal}>

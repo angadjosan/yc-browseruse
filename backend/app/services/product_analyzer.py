@@ -8,21 +8,80 @@ Workflow:
 import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.config import get_config
 from app.services.watch_service import WatchService
 
 logger = logging.getLogger(__name__)
 
+# Type alias for the log callback
+LogFn = Callable[[str], None]
+
+def _noop_log(msg: str) -> None:
+    pass
+
+
+def _extract_history_steps(history: Any, log: LogFn) -> None:
+    """Pull every available detail out of a browser-use AgentHistory and log it."""
+    # Log all URLs visited
+    try:
+        urls = history.urls()
+        if urls:
+            for u in urls:
+                log(f"  Visited: {u}")
+    except Exception:
+        pass
+
+    # Log action results / extracted content
+    try:
+        ec = history.extracted_content()
+        if ec:
+            for i, chunk in enumerate(ec):
+                text = str(chunk).strip()
+                if text:
+                    preview = text[:300] + ("..." if len(text) > 300 else "")
+                    log(f"  Extracted [{i+1}]: {preview}")
+    except Exception:
+        pass
+
+    # Log model outputs / thoughts
+    try:
+        model_outputs = history.model_actions()
+        if model_outputs:
+            for i, action in enumerate(model_outputs):
+                if isinstance(action, dict):
+                    thought = (action.get("current_state") or {}).get("next_goal") or action.get("thought") or ""
+                    act = action.get("action") or ""
+                    if thought:
+                        log(f"  Agent thought [{i+1}]: {thought}")
+                    if act:
+                        log(f"  Agent action [{i+1}]: {act}")
+                else:
+                    log(f"  Agent step [{i+1}]: {str(action)[:200]}")
+    except Exception:
+        pass
+
+    # Log final result
+    try:
+        fr = history.final_result()
+        if fr:
+            text = str(fr).strip()
+            if text:
+                preview = text[:500] + ("..." if len(text) > 500 else "")
+                log(f"  Final result: {preview}")
+    except Exception:
+        pass
+
 
 class ProductAnalyzer:
     """Analyzes product pages and generates compliance risk watches."""
 
-    def __init__(self):
+    def __init__(self, log_fn: Optional[LogFn] = None):
         self.config = get_config()
         self.watch_service = WatchService()
         self._anthropic = None
+        self._log = log_fn or _noop_log
 
     def _get_anthropic(self):
         if self._anthropic is None and self.config.get("anthropic_api_key"):
@@ -44,29 +103,33 @@ class ProductAnalyzer:
         product_url: str,
         organization_id: str,
     ) -> Dict[str, Any]:
-        """Main workflow: analyze product, generate risks, create watches.
-
-        Returns:
-            Dict with:
-                - product_info: extracted product information
-                - risks: list of identified risks
-                - watches: list of created watch objects
-        """
-        logger.info(f"Starting product analysis for URL: {product_url}")
+        """Main workflow: analyze product, generate risks, create watches."""
+        log = self._log
+        log(f"Starting product analysis for {product_url}")
 
         # Step 1: Extract product information using browser-use
+        log("─── STEP 1: Scraping product page ───")
         product_info = await self.extract_product_info(product_url)
         if not product_info or not product_info.get("content"):
             raise ValueError("Failed to extract product information from URL")
 
+        content = product_info["content"]
+        log(f"Extraction complete — {len(content)} characters scraped")
+        # Show a preview of what was extracted
+        preview = content[:600].replace("\n", " ").strip()
+        log(f"Content preview: {preview}...")
+
         # Step 2: Generate compliance risks using Claude
+        log("─── STEP 2: Analyzing compliance risks with Claude ───")
         risks = await self.generate_risk_analysis(product_info, product_url)
         if not risks:
             raise ValueError("Failed to generate compliance risk analysis")
 
         # Step 3: Create watches for each risk
+        log("─── STEP 3: Creating watches ───")
         watches = await self.create_watches_from_risks(risks, organization_id, product_url)
 
+        log(f"All done — {len(watches)} watches active")
         return {
             "product_info": product_info,
             "risks": risks,
@@ -74,13 +137,11 @@ class ProductAnalyzer:
         }
 
     async def extract_product_info(self, product_url: str) -> Dict[str, Any]:
-        """Step 1: Use browser-use agent to extract product information.
+        """Step 1: Use browser-use agent to extract product information."""
+        log = self._log
 
-        Uses the custom browser-use model to navigate the product page and
-        extract use cases and relevant information.
-        """
         if not self._has_browser_use():
-            logger.warning("Browser-use not available, using mock extraction")
+            log("Browser-use not available — using mock extraction")
             return {
                 "content": f"[MOCK] Product information from {product_url}. Install browser-use for real extraction.",
                 "url": product_url,
@@ -94,6 +155,7 @@ class ProductAnalyzer:
         @tools.action("Save the extracted product information")
         async def save_product_info(content: str) -> ActionResult:
             extracted_data["content"] = content
+            log(f"Agent saved product info ({len(content)} chars)")
             return ActionResult(extracted_content=content)
 
         task_prompt = f"""Navigate to {product_url} and extract comprehensive information about this product/service.
@@ -112,6 +174,8 @@ Search for additional information online if needed to get a complete picture.
 Use the save_product_info action to save your findings."""
 
         use_cloud = bool(self.config.get("browser_use_api_key"))
+        log(f"Launching browser agent (cloud={use_cloud}) → {product_url}")
+        log(f"Max steps: 30")
         browser = Browser(headless=True, use_cloud=use_cloud)
         llm = ChatBrowserUse()
 
@@ -124,7 +188,10 @@ Use the save_product_info action to save your findings."""
         )
 
         try:
+            log("Agent running...")
             history = await agent.run(max_steps=30)
+            log("Agent finished — extracting results")
+            _extract_history_steps(history, log)
         finally:
             try:
                 await browser.close()
@@ -160,6 +227,7 @@ Use the save_product_info action to save your findings."""
         except Exception:
             pass
 
+        log(f"Product extraction yielded {len(content)} chars from {url}")
         return {
             "content": content.strip() or "No content extracted.",
             "url": url,
@@ -170,23 +238,16 @@ Use the save_product_info action to save your findings."""
         product_info: Dict[str, Any],
         product_url: str,
     ) -> List[Dict[str, Any]]:
-        """Step 2: Use Claude to analyze product and generate compliance risks.
-
-        Takes product information and generates a comprehensive list of regulatory
-        risks with deep analysis of exposure points.
-
-        Returns list of risks, each containing:
-            - regulation_title: Name of the regulation
-            - risk_rationale: Why this regulation applies
-            - jurisdiction: Geographic scope
-            - scope: What aspects are affected
-            - source_url: Official regulation URL
-            - check_interval_seconds: How often to monitor
-            - current_state: Initial snapshot of regulation
-        """
+        """Step 2: Use Claude to analyze product and generate compliance risks."""
+        log = self._log
         client = self._get_anthropic()
         if not client:
             raise RuntimeError("ANTHROPIC_API_KEY required for risk analysis")
+
+        model = self.config.get("claude_model", "claude-sonnet-4-20250514")
+        log(f"Calling Claude ({model}) for risk analysis...")
+        content_len = len(product_info.get("content", ""))
+        log(f"Sending {min(content_len, 8000)} chars of product info to Claude")
 
         prompt = f"""You are a compliance expert. Analyze this product/service and identify ALL potential regulatory and compliance risks.
 
@@ -239,19 +300,35 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
 
         try:
             response = client.messages.create(
-                model=self.config.get("claude_model", "claude-sonnet-4-20250514"),
+                model=model,
                 max_tokens=8192,
                 temperature=0.2,
                 messages=[{"role": "user", "content": prompt}],
                 system="You are a compliance expert. Return only the JSON array, no other text or markdown fences.",
             )
             text = response.content[0].text if response.content else "[]"
+            log(f"Claude responded — {len(text)} chars, parsing risks...")
             risks = self._parse_json_array(text)
+            log(f"Parsed {len(risks)} risks from Claude response")
+
+            for i, risk in enumerate(risks):
+                title = risk.get("regulation_title", "Unknown")
+                jurisdiction = risk.get("jurisdiction", "")
+                log(f"  Risk {i+1}/{len(risks)}: {title} ({jurisdiction})")
 
             # Now fetch current state for each risk
-            for risk in risks:
-                current_state = await self._fetch_initial_regulation_state(risk)
-                risk["current_state"] = current_state
+            log("─── Fetching current regulation state for each risk ───")
+            for i, risk in enumerate(risks):
+                title = risk.get("regulation_title", "Unknown")
+                log(f"Fetching state {i+1}/{len(risks)}: {title}")
+                try:
+                    current_state = await self._fetch_initial_regulation_state(risk)
+                    risk["current_state"] = current_state
+                    state_preview = current_state[:200].replace("\n", " ") if current_state else "(empty)"
+                    log(f"  Got {len(current_state)} chars: {state_preview}...")
+                except Exception as e:
+                    log(f"  Failed to fetch state for {title}: {e}")
+                    risk["current_state"] = f"Failed to fetch: {e}"
 
             return risks
         except Exception:
@@ -260,6 +337,8 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
 
     async def _fetch_initial_regulation_state(self, risk: Dict[str, Any]) -> str:
         """Fetch the initial/current state of a regulation using browser-use."""
+        log = self._log
+
         if not self._has_browser_use():
             return f"Initial state for {risk.get('regulation_title', 'regulation')} (browser-use unavailable)"
 
@@ -271,6 +350,7 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
         @tools.action("Save the current regulation text")
         async def save_regulation_state(content: str) -> ActionResult:
             extracted_data["content"] = content
+            log(f"    Agent saved regulation state ({len(content)} chars)")
             return ActionResult(extracted_content=content)
 
         source_url = risk.get("source_url", "")
@@ -278,8 +358,10 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
 
         if source_url and source_url.startswith("http"):
             nav_instruction = f"Navigate to {source_url}"
+            log(f"  Navigating to: {source_url}")
         else:
             nav_instruction = f'Search Google for: "{search_query}"'
+            log(f"  Searching for: {search_query}")
 
         task_prompt = f"""Find and extract the current text of this regulation:
 
@@ -307,7 +389,10 @@ Extract ALL relevant regulatory language."""
         )
 
         try:
+            log(f"  Launching regulation scraper agent (max_steps=25)")
             history = await agent.run(max_steps=25)
+            log(f"  Regulation scraper finished")
+            _extract_history_steps(history, lambda msg: log(f"  {msg}"))
         finally:
             try:
                 await browser.close()
@@ -332,21 +417,21 @@ Extract ALL relevant regulatory language."""
         product_url: str,
     ) -> List[Dict[str, Any]]:
         """Step 3: Create a watch for each identified risk."""
+        log = self._log
         watches = []
 
-        for risk in risks:
+        for i, risk in enumerate(risks):
             watch_name = f"{risk.get('regulation_title', 'Compliance Risk')}"
             description = f"{risk.get('risk_rationale', '')}\n\nJurisdiction: {risk.get('jurisdiction', 'Unknown')}\nScope: {risk.get('scope', 'Unknown')}"
 
-            check_interval = risk.get("check_interval_seconds", 86400)  # Default: daily
+            check_interval = risk.get("check_interval_seconds", 86400)
 
-            # Convert check_interval_seconds to schedule
-            if check_interval >= 604800:  # Weekly
-                schedule = {"cron": "0 9 * * 1", "timezone": "UTC"}  # Monday 9 AM
-            elif check_interval >= 86400:  # Daily
-                schedule = {"cron": "0 9 * * *", "timezone": "UTC"}  # Daily 9 AM
-            else:  # Hourly or more frequent
-                schedule = {"cron": "0 * * * *", "timezone": "UTC"}  # Every hour
+            if check_interval >= 604800:
+                schedule = {"cron": "0 9 * * 1", "timezone": "UTC"}
+            elif check_interval >= 86400:
+                schedule = {"cron": "0 9 * * *", "timezone": "UTC"}
+            else:
+                schedule = {"cron": "0 * * * *", "timezone": "UTC"}
 
             config = {
                 "schedule": schedule,
@@ -362,7 +447,7 @@ Extract ALL relevant regulatory language."""
                 ],
             }
 
-            # Create watch with extended metadata
+            log(f"Creating watch {i+1}/{len(risks)}: {watch_name}")
             watch = await self.watch_service.create_watch(
                 organization_id=organization_id,
                 name=watch_name,
@@ -379,20 +464,19 @@ Extract ALL relevant regulatory language."""
                 current_regulation_state=risk.get("current_state", ""),
             )
             watches.append(watch)
+            log(f"  Watch created: {watch.get('id', '?')}")
 
-        logger.info(f"Created {len(watches)} watches from risk analysis")
+        log(f"All {len(watches)} watches created successfully")
         return watches
 
     def _parse_json_array(self, text: str) -> List[Dict[str, Any]]:
         """Extract JSON array from text that may contain markdown fences or prose."""
         text = text.strip()
-        # Strip markdown code fences
         if "```" in text:
             import re
             match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
             if match:
                 text = match.group(1).strip()
-        # Find JSON array
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1 and end > start:

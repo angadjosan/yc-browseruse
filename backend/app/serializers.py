@@ -68,6 +68,13 @@ def serialize_watch(row: Dict[str, Any]) -> Dict[str, Any]:
         "status": status,
         "nextRunAt": next_run_at or "",
         "lastRunAt": row.get("last_run_at"),
+        "riskRationale": row.get("risk_rationale") or "",
+        "jurisdiction": jurisdiction,
+        "scope": row.get("scope") or "",
+        "sourceUrl": source_url,
+        "checkIntervalSeconds": row.get("check_interval_seconds"),
+        "currentRegulationState": row.get("current_regulation_state") or "",
+        "type": row.get("type") or "custom",
     }
 
 
@@ -232,7 +239,16 @@ def _serialize_diff(change: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         [{"type": "remove", "text": d} for d in deletions[:5]]
         + [{"type": "add", "text": a} for a in additions[:5]]
     )
-    return {"before": before, "after": after, "highlights": highlights}
+    compliance_summary = details.get("compliance_summary") or semantic.get("compliance_summary") or ""
+    change_summary = details.get("change_summary") or semantic.get("change_summary") or change.get("diff_summary") or ""
+
+    return {
+        "before": before,
+        "after": after,
+        "highlights": highlights,
+        "complianceSummary": compliance_summary,
+        "changeSummary": change_summary,
+    }
 
 
 def _serialize_ticket(

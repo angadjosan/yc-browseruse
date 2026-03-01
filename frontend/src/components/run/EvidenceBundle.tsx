@@ -64,9 +64,23 @@ export function EvidenceBundle({
             </div>
           ))}
         </div>
-        <Button variant="outline" className="w-full">
-          <Download className="mr-2 h-4 w-4" /> Download evidence bundle
-        </Button>
+        {(() => {
+          const snapshotArtifact = artifacts.find((a) => a.type === "snapshot" && a.url);
+          if (snapshotArtifact?.url) {
+            return (
+              <Button variant="outline" className="w-full" asChild>
+                <a href={snapshotArtifact.url} target="_blank" rel="noopener noreferrer">
+                  <Download className="mr-2 h-4 w-4" /> Download evidence bundle
+                </a>
+              </Button>
+            );
+          }
+          return (
+            <Button variant="outline" className="w-full" disabled>
+              <Download className="mr-2 h-4 w-4" /> No evidence to download
+            </Button>
+          );
+        })()}
       </CardContent>
     </Card>
   );

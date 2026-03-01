@@ -54,6 +54,26 @@ export function DiffViewer({ diff, impactMemo }: DiffViewerProps) {
             </ul>
           </div>
         )}
+        {diff.changeSummary && (
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Change summary
+            </p>
+            <p className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-foreground leading-relaxed">
+              {diff.changeSummary}
+            </p>
+          </div>
+        )}
+        {diff.complianceSummary && (
+          <div>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-primary">
+              How to comply
+            </p>
+            <p className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm text-foreground leading-relaxed">
+              {diff.complianceSummary}
+            </p>
+          </div>
+        )}
         {impactMemo && impactMemo.length > 0 && (
           <div>
             <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">

@@ -16,10 +16,15 @@ Magnus made a demo of this stuff before.
 FOr the demo, do it on a real product. Perhaps agentmail or one of these big ones.
 - find a small change in regulations
 
-- big use case. Make sure that 
-
-Here's what a strong demo looks like for this product:
+Here's what a strong demo looks like for this product: TRY IT ON AGENTMAIL.
 1. Open with a real scenario — "Last week, the CFPB updated their guidance on buy-now-pay-later. A compliance analyst at a fintech found out two weeks later from a lawyer. That cost them $40k in legal fees."
 2. Show me your product catching that change automatically, the moment it happened.
 3. Show me the ticket it created, with the diff and the impact memo already written.
 4. Ask me: "Would you rather find out from a lawyer, or from this?"
+
+Eventually get it to a point where it can actually go through your entire product and find use cases. This would be super useful.
+- If we get a video demo of this, it’s over.
+
+also, 
+
+need to be able to justify our architecture - why claude with browseruse subagents

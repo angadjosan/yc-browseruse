@@ -5,7 +5,7 @@ Workflow:
 2. Use Claude to analyze product and generate list of compliance risks
 3. Create watches for each identified risk
 """
-import hashlib
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -29,15 +29,6 @@ class ProductAnalyzer:
             from anthropic import Anthropic
             self._anthropic = Anthropic(api_key=self.config["anthropic_api_key"])
         return self._anthropic
-
-    def _has_browser_use(self) -> bool:
-        if not self.config.get("browser_use_api_key"):
-            return False
-        try:
-            from browser_use import Agent, Browser, ChatBrowserUse  # noqa: F401
-            return True
-        except ImportError:
-            return False
 
     async def analyze_product_url(
         self,
@@ -79,13 +70,6 @@ class ProductAnalyzer:
         Uses the custom browser-use model to navigate the product page and
         extract use cases and relevant information.
         """
-        if not self._has_browser_use():
-            logger.warning("Browser-use not available, using mock extraction")
-            return {
-                "content": f"[MOCK] Product information from {product_url}. Install browser-use for real extraction.",
-                "url": product_url,
-            }
-
         from browser_use import Agent, Browser, ChatBrowserUse, Tools, ActionResult
 
         extracted_data: Dict[str, str] = {}
@@ -124,7 +108,9 @@ Use the save_product_info action to save your findings."""
         )
 
         try:
-            history = await agent.run(max_steps=30)
+            history = await asyncio.wait_for(agent.run(max_steps=30), timeout=300.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Browser agent timed out extracting product info")
         finally:
             try:
                 await browser.close()
@@ -132,24 +118,6 @@ Use the save_product_info action to save your findings."""
                 pass
 
         content = extracted_data.get("content", "")
-        if not content:
-            try:
-                fr = history.final_result()
-                if isinstance(fr, str) and fr.strip():
-                    content = fr
-                elif isinstance(fr, dict) and fr.get("content"):
-                    content = fr["content"]
-            except Exception:
-                pass
-
-        if not content:
-            try:
-                ec = history.extracted_content()
-                if ec:
-                    parts = [str(x) for x in ec if x]
-                    content = "\n".join(parts)
-            except Exception:
-                pass
 
         # Extract final URL
         url = product_url
@@ -161,7 +129,7 @@ Use the save_product_info action to save your findings."""
             pass
 
         return {
-            "content": content.strip() or "No content extracted.",
+            "content": content.strip(),
             "url": url,
         }
 
@@ -248,10 +216,11 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
             text = response.content[0].text if response.content else "[]"
             risks = self._parse_json_array(text)
 
-            # Now fetch current state for each risk
-            for risk in risks:
-                current_state = await self._fetch_initial_regulation_state(risk)
-                risk["current_state"] = current_state
+            # Fetch current state for all risks in parallel
+            async def _fetch_one(risk: Dict[str, Any]) -> None:
+                risk["current_state"] = await self._fetch_initial_regulation_state(risk)
+
+            await asyncio.gather(*[_fetch_one(r) for r in risks], return_exceptions=True)
 
             return risks
         except Exception:
@@ -260,9 +229,6 @@ Be thorough - aim for 10-20 risks minimum, including both major and minor regula
 
     async def _fetch_initial_regulation_state(self, risk: Dict[str, Any]) -> str:
         """Fetch the initial/current state of a regulation using browser-use."""
-        if not self._has_browser_use():
-            return f"Initial state for {risk.get('regulation_title', 'regulation')} (browser-use unavailable)"
-
         from browser_use import Agent, Browser, ChatBrowserUse, Tools, ActionResult
 
         extracted_data: Dict[str, str] = {}
@@ -307,7 +273,10 @@ Extract ALL relevant regulatory language."""
         )
 
         try:
-            history = await agent.run(max_steps=25)
+            history = await asyncio.wait_for(agent.run(max_steps=25), timeout=180.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timed out fetching regulation state for {risk.get('regulation_title')}")
+            return ""
         finally:
             try:
                 await browser.close()
@@ -315,15 +284,7 @@ Extract ALL relevant regulatory language."""
                 pass
 
         content = extracted_data.get("content", "")
-        if not content:
-            try:
-                fr = history.final_result()
-                if isinstance(fr, str) and fr.strip():
-                    content = fr
-            except Exception:
-                pass
-
-        return content.strip() or f"Current state of {risk.get('regulation_title', 'regulation')}"
+        return content.strip()
 
     async def create_watches_from_risks(
         self,
@@ -335,6 +296,11 @@ Extract ALL relevant regulatory language."""
         watches = []
 
         for risk in risks:
+            # Validate Claude-generated URL — discard hallucinated non-URLs
+            source_url = risk.get("source_url", "") or ""
+            if not source_url.startswith(("http://", "https://")):
+                risk["source_url"] = ""
+
             watch_name = f"{risk.get('regulation_title', 'Compliance Risk')}"
             description = f"{risk.get('risk_rationale', '')}\n\nJurisdiction: {risk.get('jurisdiction', 'Unknown')}\nScope: {risk.get('scope', 'Unknown')}"
 

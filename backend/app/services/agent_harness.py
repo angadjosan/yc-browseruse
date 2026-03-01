@@ -190,5 +190,9 @@ async def run_main_agent_loop(
         # Append assistant message and our tool results
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_result_blocks})
+        # Keep message history bounded to avoid token overflow.
+        # Retain: initial user prompt + last 6 assistant/user pairs.
+        if len(messages) > 13:
+            messages = [messages[0]] + messages[-12:]
 
     return task_results

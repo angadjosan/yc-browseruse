@@ -2,6 +2,7 @@
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -27,8 +28,26 @@ router = APIRouter(prefix="/api", tags=["api"])
 # Default org for single-tenant; in production use auth
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
-# In-memory job store for product analysis (MVP: single-tenant, single process)
-_analysis_jobs: Dict[str, Dict[str, Any]] = {}
+# File-backed job store — survives server restarts during demo
+_JOBS_FILE = Path(__file__).resolve().parent.parent.parent / ".analysis_jobs.json"
+
+
+def _load_jobs() -> Dict[str, Any]:
+    try:
+        if _JOBS_FILE.exists():
+            return json.loads(_JOBS_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_job(job_id: str, data: Dict[str, Any]) -> None:
+    try:
+        jobs = _load_jobs()
+        jobs[job_id] = data
+        _JOBS_FILE.write_text(json.dumps(jobs, default=str))
+    except Exception:
+        pass
 
 
 class AnalyzeProductRequest(BaseModel):
@@ -45,15 +64,16 @@ async def _execute_watch_background(watch_id: str, run_id: Optional[str] = None)
 
 async def _run_analysis_background(job_id: str, product_url: str):
     """Background task: run product analysis and update job store."""
-    _analysis_jobs[job_id]["status"] = "running"
+    _save_job(job_id, {"status": "running", "product_url": product_url})
     analyzer = ProductAnalyzer()
     try:
         result = await analyzer.analyze_product_url(
             product_url=product_url,
             organization_id=DEFAULT_ORG_ID,
         )
-        _analysis_jobs[job_id].update({
+        _save_job(job_id, {
             "status": "completed",
+            "product_url": product_url,
             "product_info": {
                 "content_preview": result["product_info"]["content"][:500],
                 "url": result["product_info"]["url"],
@@ -63,7 +83,7 @@ async def _run_analysis_background(job_id: str, product_url: str):
             "watches": [serialize_watch(w) for w in result["watches"]],
         })
     except Exception as e:
-        _analysis_jobs[job_id].update({"status": "failed", "error": str(e)})
+        _save_job(job_id, {"status": "failed", "product_url": product_url, "error": str(e)})
 
 
 # ── Product analysis (onboarding) ───────────────────────────────────────────
@@ -75,7 +95,7 @@ async def analyze_product(request: AnalyzeProductRequest, background_tasks: Back
     Returns immediately with a job_id. Poll GET /api/analyze-product/{job_id} for status.
     """
     job_id = str(uuid.uuid4())
-    _analysis_jobs[job_id] = {"status": "pending", "product_url": request.product_url}
+    _save_job(job_id, {"status": "pending", "product_url": request.product_url})
     background_tasks.add_task(_run_analysis_background, job_id, request.product_url)
     return {
         "status": "queued",
@@ -88,7 +108,7 @@ async def analyze_product(request: AnalyzeProductRequest, background_tasks: Back
 @router.get("/analyze-product/{job_id}", response_model=dict)
 async def get_analysis_status(job_id: str):
     """Get the status of a product analysis job."""
-    job = _analysis_jobs.get(job_id)
+    job = _load_jobs().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Analysis job not found")
     return {"job_id": job_id, **job}

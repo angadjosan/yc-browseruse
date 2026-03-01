@@ -158,10 +158,10 @@ def serialize_run(
             and run_row.get("status") == "completed"
         ),
         "retries": run_row.get("tasks_failed") or 0,
-        "artifacts": _serialize_artifacts(evidence_bundles[0] if evidence_bundles else None),
-        "diff": _serialize_diff(changes[0] if changes else None),
+        "artifacts": _serialize_all_artifacts(evidence_bundles),
+        "diff": _serialize_merged_diff(changes),
         "ticket": _serialize_ticket(evidence_bundles, changes),
-        "impactMemo": _serialize_impact_memo(evidence_bundles[0] if evidence_bundles else None),
+        "impactMemo": _serialize_all_impact_memos(evidence_bundles),
     }
 
 
@@ -295,6 +295,32 @@ def _serialize_impact_memo(bundle: Optional[Dict[str, Any]]) -> Optional[List[st
     memo = bundle["impact_memo"]
     parts = re.split(r"\n{2,}|(?=\d+\.\s)", memo.strip())
     return [p.strip() for p in parts if p.strip()][:6]
+
+
+def _serialize_all_artifacts(evidence_bundles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    artifacts = []
+    for bundle in evidence_bundles:
+        artifacts.extend(_serialize_artifacts(bundle))
+    return artifacts
+
+
+def _serialize_merged_diff(changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not changes:
+        return {"before": "", "after": "", "highlights": []}
+    result = _serialize_diff(changes[0])
+    for c in changes[1:]:
+        extra = _serialize_diff(c)
+        result["highlights"].extend(extra["highlights"])
+    return result
+
+
+def _serialize_all_impact_memos(evidence_bundles: List[Dict[str, Any]]) -> Optional[List[str]]:
+    all_parts: List[str] = []
+    for bundle in evidence_bundles:
+        parts = _serialize_impact_memo(bundle)
+        if parts:
+            all_parts.extend(parts)
+    return all_parts if all_parts else None
 
 
 # ── GlobePoint ─────────────────────────────────────────────────────────────

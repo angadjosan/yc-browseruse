@@ -47,15 +47,16 @@ def _start_scheduler():
                 # and check if enough time has passed since last_run_at
                 last_run = w.get("last_run_at")
                 if last_run:
-                    from datetime import datetime, timedelta
+                    from datetime import datetime, timedelta, timezone
                     try:
                         if isinstance(last_run, str):
-                            # Strip timezone info for comparison
-                            last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00").replace("+00:00", ""))
+                            last_dt = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
                         else:
                             last_dt = last_run
+                        if last_dt.tzinfo is None:
+                            last_dt = last_dt.replace(tzinfo=timezone.utc)
                         # Don't re-run if ran within the last hour
-                        if datetime.utcnow() - last_dt < timedelta(hours=1):
+                        if datetime.now(timezone.utc) - last_dt < timedelta(hours=1):
                             continue
                     except Exception:
                         pass

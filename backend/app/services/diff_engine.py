@@ -50,22 +50,10 @@ class DiffEngine:
         # Only run semantic diff if there are meaningful text changes
         semantic_diff = None
         if text_diff.get("total_changes", 0) > 0:
-            client = self._get_anthropic()
-            if client:
-                semantic_diff = await self._compute_semantic_diff(
-                    old_content, new_content,
-                    current_snapshot.get("target_name", "Unknown"),
-                )
-
-        # If no semantic diff available, build a basic one
-        if not semantic_diff and text_diff.get("total_changes", 0) > 0:
-            semantic_diff = {
-                "summary": f"{text_diff['total_changes']} line(s) changed ({len(text_diff.get('additions', []))} added, {len(text_diff.get('deletions', []))} removed).",
-                "impact_level": "medium",
-                "sections_affected": [],
-                "key_changes": [],
-                "recommended_actions": ["Review the changes manually."],
-            }
+            semantic_diff = await self._compute_semantic_diff(
+                old_content, new_content,
+                current_snapshot.get("target_name", "Unknown"),
+            )
 
         return {
             "has_changes": True,
@@ -94,7 +82,7 @@ class DiffEngine:
     ) -> Optional[Dict[str, Any]]:
         client = self._get_anthropic()
         if not client:
-            return None
+            raise RuntimeError("ANTHROPIC_API_KEY required for semantic diff")
 
         prompt = f"""Analyze these two versions of compliance document "{target_name}" and identify meaningful changes.
 
@@ -123,25 +111,15 @@ Impact levels:
 
 Return ONLY the JSON, no other text."""
 
-        try:
-            response = client.messages.create(
-                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=2048,
-                temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance expert analyzing regulatory changes. Return only valid JSON.",
-            )
-            text = response.content[0].text if response.content else "{}"
-            return self._parse_json_response(text)
-        except Exception:
-            logger.exception("Semantic diff failed")
-            return {
-                "summary": "Semantic analysis unavailable.",
-                "impact_level": "medium",
-                "sections_affected": [],
-                "recommended_actions": [],
-                "key_changes": [],
-            }
+        response = client.messages.create(
+            model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+            max_tokens=2048,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a compliance expert analyzing regulatory changes. Return only valid JSON.",
+        )
+        text = response.content[0].text if response.content else "{}"
+        return self._parse_json_response(text)
 
     def _parse_json_response(self, text: str) -> Dict[str, Any]:
         """Parse JSON from Claude response, handling markdown fences."""
@@ -155,64 +133,15 @@ Return ONLY the JSON, no other text."""
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            try:
-                data = json.loads(text[start:end + 1])
-                # Validate expected fields
-                return {
-                    "summary": data.get("summary", ""),
-                    "impact_level": data.get("impact_level", "medium"),
-                    "sections_affected": data.get("sections_affected", []),
-                    "key_changes": data.get("key_changes", []),
-                    "recommended_actions": data.get("recommended_actions", []),
-                }
-            except json.JSONDecodeError:
-                pass
-        # Fallback: try to parse the old way
-        return self._parse_semantic_analysis_freetext(text)
-
-    def _parse_semantic_analysis_freetext(self, text: str) -> Dict[str, Any]:
-        """Fallback parser for free-text Claude responses."""
-        lines = text.strip().split("\n")
-        result = {
-            "summary": "",
-            "impact_level": "medium",
-            "sections_affected": [],
-            "recommended_actions": [],
-            "key_changes": [],
-        }
-        current_section = None
-        for line in lines:
-            ls = line.strip()
-            upper = ls.upper()
-            if "SUMMARY" in upper:
-                current_section = "summary"
-            elif "IMPACT LEVEL" in upper:
-                current_section = "impact"
-            elif "SECTIONS AFFECTED" in upper:
-                current_section = "sections"
-            elif "KEY CHANGES" in upper:
-                current_section = "changes"
-            elif "RECOMMENDED ACTIONS" in upper:
-                current_section = "actions"
-            elif re.match(r"^[-•*\d.]\s*", ls):
-                item = re.sub(r"^[-•*\d.]+\s*", "", ls).strip()
-                if not item:
-                    continue
-                if current_section == "sections":
-                    result["sections_affected"].append(item)
-                elif current_section == "actions":
-                    result["recommended_actions"].append(item)
-                elif current_section == "changes":
-                    result["key_changes"].append({"description": item})
-            elif current_section == "summary" and ls:
-                result["summary"] += ls + " "
-            elif current_section == "impact" and ls:
-                for level in ["critical", "high", "medium", "low"]:
-                    if level.upper() in upper:
-                        result["impact_level"] = level
-                        break
-        result["summary"] = result["summary"].strip()
-        return result
+            data = json.loads(text[start:end + 1])
+            return {
+                "summary": data.get("summary", ""),
+                "impact_level": data.get("impact_level", "medium"),
+                "sections_affected": data.get("sections_affected", []),
+                "key_changes": data.get("key_changes", []),
+                "recommended_actions": data.get("recommended_actions", []),
+            }
+        return {}
 
     async def generate_compliance_summary(
         self,
@@ -232,7 +161,7 @@ Return ONLY the JSON, no other text."""
         """
         client = self._get_anthropic()
         if not client:
-            return "Compliance analysis unavailable (Claude API not configured)."
+            raise RuntimeError("ANTHROPIC_API_KEY required for compliance summary")
 
         semantic_diff = change_details.get("semantic_diff") or {}
         research_context = ""
@@ -266,19 +195,15 @@ Focus on:
 
 Be specific and practical. Return 3-5 paragraphs of actionable guidance."""
 
-        try:
-            response = client.messages.create(
-                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=2048,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance expert providing actionable guidance.",
-            )
-            text = response.content[0].text if response.content else ""
-            return text.strip() or "Unable to generate compliance summary."
-        except Exception:
-            logger.exception("Failed to generate compliance summary")
-            return "Error generating compliance summary."
+        response = client.messages.create(
+            model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+            max_tokens=2048,
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a compliance expert providing actionable guidance.",
+        )
+        text = response.content[0].text if response.content else ""
+        return text.strip()
 
     async def generate_change_summary(
         self,
@@ -300,7 +225,7 @@ Be specific and practical. Return 3-5 paragraphs of actionable guidance."""
         """
         client = self._get_anthropic()
         if not client:
-            return "Change analysis unavailable (Claude API not configured)."
+            raise RuntimeError("ANTHROPIC_API_KEY required for change summary")
 
         research_context = ""
         if research_findings:
@@ -327,16 +252,12 @@ Include:
 
 Be clear and factual. Return 2-4 paragraphs."""
 
-        try:
-            response = client.messages.create(
-                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
-                max_tokens=2048,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance expert explaining regulatory changes.",
-            )
-            text = response.content[0].text if response.content else ""
-            return text.strip() or "Unable to generate change summary."
-        except Exception:
-            logger.exception("Failed to generate change summary")
-            return "Error generating change summary."
+        response = client.messages.create(
+            model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+            max_tokens=2048,
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a compliance expert explaining regulatory changes.",
+        )
+        text = response.content[0].text if response.content else ""
+        return text.strip()

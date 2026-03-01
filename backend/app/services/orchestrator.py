@@ -517,18 +517,17 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
 
     async def _append_run_step(self, run_id: str, step: Dict[str, Any]) -> None:
         """Append a step entry to run_steps_log for real-time frontend polling."""
+        import json as _json
         try:
-            run = await self.watch_service.get_run(run_id)
-            steps = (run or {}).get("run_steps_log") or []
-            steps.append(step)
+            step_json = _json.dumps(step)
             await asyncio.to_thread(
-                lambda: self.db.table("watch_runs")
-                .update({"run_steps_log": steps})
-                .eq("id", run_id)
-                .execute()
+                lambda: self.db.rpc(
+                    "append_run_step",
+                    {"p_run_id": run_id, "p_step": step_json},
+                ).execute()
             )
         except Exception:
-            logger.debug(f"[run={run_id}] _append_run_step failed (column may not exist yet)")
+            logger.debug(f"[run={run_id}] _append_run_step failed")
 
     # ── Helpers ────────────────────────────────────────────────────────
 

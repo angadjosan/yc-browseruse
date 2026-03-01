@@ -48,3 +48,4 @@ evidence/
 
 # Telemetry / debug
 .cursor/
+dump.rdb

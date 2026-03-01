@@ -157,6 +157,7 @@ def serialize_run(
         "id": str(run_row["id"]),
         "watchId": str(run_row["watch_id"]),
         "watchName": watch.get("name") if watch else None,
+        "status": run_row.get("status") or "completed",
         "startedAt": run_row["started_at"],
         "endedAt": run_row.get("completed_at") or run_row["started_at"],
         "steps": steps,
@@ -169,6 +170,8 @@ def serialize_run(
         "diff": _serialize_merged_diff(changes),
         "ticket": _serialize_ticket(evidence_bundles, changes),
         "impactMemo": _serialize_all_impact_memos(evidence_bundles),
+        "agentThoughts": run_row.get("agent_thoughts") or [],
+        "agentSummary": run_row.get("agent_summary") or "",
     }
 
 
@@ -184,6 +187,7 @@ def serialize_run_lean(
         "id": str(run_row["id"]),
         "watchId": str(run_row["watch_id"]),
         "watchName": watch.get("name") if watch else None,
+        "status": run_row.get("status") or "completed",
         "startedAt": run_row["started_at"],
         "endedAt": run_row.get("completed_at") or run_row["started_at"],
         "steps": steps,

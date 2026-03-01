@@ -355,12 +355,14 @@ export default function WatchDetailPage() {
                   <div className="flex flex-wrap items-center gap-4">
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        run.steps?.[run.steps.length - 1]?.status === "done" || !run.endedAt
-                          ? "bg-primary/20 text-primary"
-                          : "bg-destructive/20 text-destructive"
+                        run.status === "running"
+                          ? "bg-amber-500/20 text-amber-400 animate-pulse"
+                          : run.status === "failed"
+                          ? "bg-destructive/20 text-destructive"
+                          : "bg-primary/20 text-primary"
                       }`}
                     >
-                      {run.endedAt ? "completed" : "running"}
+                      {run.status ?? "completed"}
                     </span>
                     <span className="text-sm text-muted-foreground">
                       {new Date(run.startedAt).toLocaleString()}

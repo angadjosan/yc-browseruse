@@ -60,10 +60,16 @@ export type TicketData = {
   title: string;
 };
 
+export type AgentThought = {
+  target_name: string;
+  thoughts: Record<string, unknown>[];
+};
+
 export type Run = {
   id: string;
   watchId: string;
   watchName?: string;
+  status: "running" | "completed" | "failed";
   startedAt: string;
   endedAt: string;
   steps: RunStep[];
@@ -73,6 +79,8 @@ export type Run = {
   diff: DiffData;
   ticket: TicketData;
   impactMemo?: string[];
+  agentThoughts?: AgentThought[];
+  agentSummary?: string;
 };
 
 export type GlobePoint = {

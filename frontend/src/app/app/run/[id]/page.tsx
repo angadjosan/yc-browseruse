@@ -6,7 +6,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { RunTimeline } from "@/components/run/RunTimeline";
 import { DiffViewer } from "@/components/run/DiffViewer";
-import { EvidenceBundle } from "@/components/run/EvidenceBundle";
+import { AgentOrchestrator } from "@/components/run/AgentOrchestrator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ExternalLink, ArrowLeft, Loader2, Radio } from "lucide-react";
@@ -17,7 +17,7 @@ function useRunWithRetry(runId: string | undefined) {
     () => api.runs.get(runId!),
     {
       refreshInterval: (data) =>
-        !data || data.endedAt === data.startedAt ? 2000 : 0,
+        !data || data.status === "running" ? 2000 : 0,
       errorRetryCount: 10,
       errorRetryInterval: 2000,
       shouldRetryOnError: true,
@@ -32,13 +32,13 @@ export default function RunDetailPage() {
 
   const { run, error, isLoading } = useRunWithRetry(id);
 
-  const isRunning = run && run.endedAt === run.startedAt;
+  const isRunning = run?.status === "running";
 
   if (isLoading && !run) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 p-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
-        <p className="text-muted-foreground">Run is starting…</p>
+        <p className="text-muted-foreground">Run is starting...</p>
         <Button variant="outline" size="sm" asChild>
           <Link href="/app">
             <ArrowLeft className="mr-2 h-4 w-4" /> Back to Dashboard
@@ -65,6 +65,7 @@ export default function RunDetailPage() {
 
   return (
     <div className="space-y-6 p-6 md:p-8">
+      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <Button variant="ghost" size="sm" asChild>
@@ -77,21 +78,23 @@ export default function RunDetailPage() {
               {run.watchName ?? run.watchId}
             </h1>
             {isRunning ? (
-              <Badge variant="secondary" className="gap-1">
+              <Badge variant="secondary" className="gap-1 border-amber-500/50 bg-amber-500/10 text-amber-400">
                 <Radio className="h-3 w-3 animate-pulse" /> Running
               </Badge>
+            ) : run.status === "failed" ? (
+              <Badge variant="destructive">Failed</Badge>
             ) : (
               <Badge variant="healthy">Completed</Badge>
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {run.ticket.provider && (
+            {run.ticket.provider && run.ticket.url && (
               <Badge variant="secondary">{run.ticket.provider}</Badge>
             )}
             {run.selfHealed && <Badge variant="healthy">Self-healed</Badge>}
           </div>
         </div>
-        {run.ticket.url && (
+        {!isRunning && run.ticket.url && (
           <Button asChild className="shrink-0">
             <a
               href={run.ticket.url}
@@ -106,26 +109,21 @@ export default function RunDetailPage() {
         )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">
-          {isRunning && (
-            <p className="mb-2 text-xs text-muted-foreground">
-              Live steps from worker — updates every few seconds.
-            </p>
-          )}
-          <RunTimeline steps={run.steps} />
+      {/* Content: two modes */}
+      {isRunning ? (
+        /* Running mode: full-width orchestrator tree */
+        <AgentOrchestrator run={run} />
+      ) : (
+        /* Completed mode: timeline + diff viewer, 2 columns */
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div>
+            <RunTimeline steps={run.steps} />
+          </div>
+          <div>
+            <DiffViewer diff={run.diff} impactMemo={run.impactMemo} />
+          </div>
         </div>
-        <div className="lg:col-span-1">
-          <DiffViewer diff={run.diff} impactMemo={run.impactMemo} />
-        </div>
-        <div className="lg:col-span-1">
-          <EvidenceBundle
-            artifacts={run.artifacts}
-            runId={run.id}
-            timestamp={run.endedAt}
-          />
-        </div>
-      </div>
+      )}
     </div>
   );
 }

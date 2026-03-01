@@ -82,25 +82,6 @@ async def handle_analyze_product(payload: dict):
         ]
         set_analysis_status(job_id, existing)
 
-    # Capture browser_use logs
-    bu_logger = logging.getLogger("browser_use")
-    prev_level = bu_logger.level
-    bu_logger.setLevel(logging.INFO)
-
-    class _CallbackLogHandler(logging.Handler):
-        def emit(self, record):
-            try:
-                msg = self.format(record)
-                if msg:
-                    _log(msg)
-            except Exception:
-                pass
-
-    handler = _CallbackLogHandler()
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    bu_logger.addHandler(handler)
-
     try:
         analyzer = ProductAnalyzer(log_fn=_log, on_risks_found=_on_risks)
         result = await analyzer.analyze_product_url(
@@ -144,9 +125,6 @@ async def handle_analyze_product(payload: dict):
             "logs": existing_logs,
             "error": str(e),
         })
-    finally:
-        bu_logger.removeHandler(handler)
-        bu_logger.setLevel(prev_level)
 
 
 async def handle_run_all(payload: dict):

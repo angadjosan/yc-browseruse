@@ -467,7 +467,7 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
         )
 
         try:
-            history = await asyncio.wait_for(agent.run(max_steps=30), timeout=300.0)
+            history = await asyncio.wait_for(agent.run(max_steps=3), timeout=300.0)
         except asyncio.TimeoutError:
             raise RuntimeError(f"Browser agent timed out after 5 minutes for: {task.target_name}")
         finally:

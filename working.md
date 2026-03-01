@@ -1,5 +1,4 @@
-
-2. me - test it working with Linear / Slack. Eventually do it through OAuth. make it see the diff, actually get a full linear issue + slack setup.
+real supabase
 
 3. do better prompt engineering. fix false negatives + false positives, only do it when real diff. limit the number of steps.
 

@@ -16,11 +16,6 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-echo "==> Supabase..."
-supabase stop --no-backup 2>/dev/null || true
-supabase start
-supabase db reset || true
-
 echo "==> Redis..."
 redis-server >> "$LOG_DIR/redis.log" 2>&1 &
 REDIS_PID=$!

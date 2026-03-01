@@ -227,9 +227,13 @@ Use the save_product_info action to save your findings."""
             use_vision="auto",
         )
 
+        from app.services.browser_queue import run_browser_agent
+
         try:
             log("Agent running...")
-            history = await asyncio.wait_for(agent.run(max_steps=3), timeout=90.0)
+            history = await asyncio.wait_for(
+                run_browser_agent(agent.run(max_steps=3)), timeout=90.0
+            )
             log("Agent finished — extracting results")
         except asyncio.TimeoutError:
             raise RuntimeError("Browser agent timed out extracting product info")
@@ -467,9 +471,13 @@ Steps:
             use_vision="auto",
         )
 
+        from app.services.browser_queue import run_browser_agent
+
         try:
             log(f"  Launching regulation scraper agent (max_steps=3)")
-            history = await asyncio.wait_for(agent.run(max_steps=3), timeout=60.0)
+            history = await asyncio.wait_for(
+                run_browser_agent(agent.run(max_steps=3)), timeout=60.0
+            )
             log(f"  Regulation scraper finished")
         except asyncio.TimeoutError:
             logger.warning(f"Timed out fetching regulation state for {risk.get('regulation_title')}")

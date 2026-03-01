@@ -19,7 +19,7 @@ SPAWN_BROWSER_AGENT_TOOL = {
         "Spawn a browser-use subagent to complete a web task. Each call starts a new browser session. "
         "Use this for each target/page you need to monitor or extract content from. "
         "You may spawn multiple agents in parallel for different targets. "
-        "Aim for thorough coverage — typically 10-15 agents per compliance watch run."
+        "Spawn at most 5 agents per run — pick the most important targets only."
     ),
     "input_schema": {
         "type": "object",
@@ -62,7 +62,7 @@ You have one tool: spawn_browser_agent. Each call spawns a new browser session (
 Your workflow:
 1. Analyze the watch configuration and targets
 2. For each target to monitor, call spawn_browser_agent with task_id, target_name, task_description, starting_url (if known), search_query, and extraction_instructions
-3. You may spawn multiple agents — aim for thorough coverage (typically 10-15 agents per watch run for comprehensive monitoring)
+3. You may spawn at most 5 agents — pick the highest-priority targets
 4. Each subagent runs independently; you can reason about which targets need coverage based on the watch config
 5. When you have spawned agents for all relevant targets, summarize and finish
 

@@ -345,7 +345,7 @@ CHANGE SUMMARY:
 
 IMPACT LEVEL: {semantic_diff.get('impact_level', 'medium')}
 
-Generate 10-15 specific search queries to research this change. Find information from:
+Generate up to 5 specific search queries to research this change. Find information from:
 1. News articles (Reuters, Bloomberg, industry publications)
 2. Official guidance documents and announcements
 3. Legal analysis from consulting firms
@@ -374,7 +374,7 @@ Each query should target a specific aspect or source. Return ONLY a JSON array o
             queries = []
 
         # Spawn browser agents for each query (up to 15)
-        queries = queries[:15]
+        queries = queries[:5]
         logger.info(f"Spawning {len(queries)} research agents")
 
         async def research_one(query: str, index: int) -> Dict[str, Any]:
@@ -466,8 +466,12 @@ Important: Extract ALL relevant compliance/regulatory text. Be thorough."""
             use_vision="auto",
         )
 
+        from app.services.browser_queue import run_browser_agent
+
         try:
-            history = await asyncio.wait_for(agent.run(max_steps=3), timeout=300.0)
+            history = await asyncio.wait_for(
+                run_browser_agent(agent.run(max_steps=3)), timeout=300.0
+            )
         except asyncio.TimeoutError:
             raise RuntimeError(f"Browser agent timed out after 5 minutes for: {task.target_name}")
         finally:

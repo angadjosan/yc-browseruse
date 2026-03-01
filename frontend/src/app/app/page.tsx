@@ -30,14 +30,12 @@ export default function DashboardPage() {
     setIsRunning(true);
 
     try {
-      const { run_id } = await api.watches.run(watches[0].id);
+      await Promise.all(watches.map((w) => api.watches.run(w.id)));
+    } finally {
       setIsRunning(false);
-      // Send user to run detail page so they see live steps (worker updates run_steps_log)
-      router.push(`/app/run/${run_id}`);
       mutateChanges();
       mutateWatches();
-    } catch {
-      setIsRunning(false);
+      router.push("/history");
     }
   }, [isRunning, watches, router, mutateChanges, mutateWatches]);
 

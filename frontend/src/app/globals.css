@@ -45,3 +45,13 @@ body {
   border-color: rgba(34, 197, 94, 0.3);
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.1);
 }
+
+@keyframes gradient-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}

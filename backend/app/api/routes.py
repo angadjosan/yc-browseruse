@@ -1,9 +1,11 @@
 """FastAPI route definitions."""
 import asyncio
+import json
 import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.schemas.watch import CreateWatchRequest, WatchRunSummary
@@ -12,6 +14,13 @@ from app.services.watch_service import WatchService
 from app.services.evidence_service import EvidenceService
 from app.services.orchestrator import OrchestratorEngine
 from app.services.product_analyzer import ProductAnalyzer
+from app.serializers import (
+    serialize_watch,
+    serialize_change_event,
+    serialize_run,
+    serialize_run_lean,
+    serialize_globe_points,
+)
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -27,27 +36,11 @@ class AnalyzeProductRequest(BaseModel):
     product_url: str
 
 
-def _watch_to_response(watch: Dict[str, Any], total_runs: int = 0, total_changes: int = 0) -> dict:
-    return {
-        "id": str(watch["id"]),
-        "name": watch["name"],
-        "description": watch.get("description"),
-        "status": watch.get("status", "active"),
-        "next_run_at": watch.get("next_run_at"),
-        "total_runs": total_runs,
-        "total_changes": total_changes,
-        "config": watch.get("config"),
-        "schedule": watch.get("schedule"),
-        "created_at": watch.get("created_at"),
-        "last_run_at": watch.get("last_run_at"),
-        "regulation_title": watch.get("regulation_title"),
-        "risk_rationale": watch.get("risk_rationale"),
-        "jurisdiction": watch.get("jurisdiction"),
-        "scope": watch.get("scope"),
-        "source_url": watch.get("source_url"),
-        "check_interval_seconds": watch.get("check_interval_seconds"),
-        "current_regulation_state": watch.get("current_regulation_state"),
-    }
+# ── Background helpers ──────────────────────────────────────────────────────
+
+async def _execute_watch_background(watch_id: str):
+    orchestrator = OrchestratorEngine()
+    await orchestrator.execute_watch(watch_id)
 
 
 async def _run_analysis_background(job_id: str, product_url: str):
@@ -67,22 +60,19 @@ async def _run_analysis_background(job_id: str, product_url: str):
             },
             "risks_identified": len(result["risks"]),
             "watches_created": len(result["watches"]),
-            "watches": [_watch_to_response(w) for w in result["watches"]],
+            "watches": [serialize_watch(w) for w in result["watches"]],
         })
     except Exception as e:
         _analysis_jobs[job_id].update({"status": "failed", "error": str(e)})
 
+
+# ── Product analysis (onboarding) ───────────────────────────────────────────
 
 @router.post("/analyze-product", response_model=dict)
 async def analyze_product(request: AnalyzeProductRequest, background_tasks: BackgroundTasks):
     """Analyze a product URL and create compliance risk watches (runs in background).
 
     Returns immediately with a job_id. Poll GET /api/analyze-product/{job_id} for status.
-
-    Workflow:
-    1. Extract product information using browser-use agent
-    2. Generate compliance risk analysis using Claude
-    3. Create watches for each identified risk
     """
     job_id = str(uuid.uuid4())
     _analysis_jobs[job_id] = {"status": "pending", "product_url": request.product_url}
@@ -104,6 +94,8 @@ async def get_analysis_status(job_id: str):
     return {"job_id": job_id, **job}
 
 
+# ── Watches ─────────────────────────────────────────────────────────────────
+
 @router.post("/watches", response_model=dict)
 async def create_watch(request: CreateWatchRequest):
     """Create a new compliance watch."""
@@ -116,17 +108,15 @@ async def create_watch(request: CreateWatchRequest):
         config=request.config,
         integrations=request.integrations,
     )
-    return _watch_to_response(watch)
+    return serialize_watch(watch)
 
 
 @router.get("/watches", response_model=List[dict])
 async def list_watches():
-    """List all watches for the organization with run/change counts."""
+    """List all watches for the organization — returns frontend Watch[] shape."""
+    from app.db import get_supabase
     svc = WatchService()
     watches = await svc.list_watches(DEFAULT_ORG_ID)
-
-    # Batch: get all runs in one query per watch (but use aggregation columns)
-    from app.db import get_supabase
     db = get_supabase()
 
     result = []
@@ -142,19 +132,23 @@ async def list_watches():
         )
         total_changes = changes_r.count if changes_r.count is not None else len(changes_r.data or [])
 
-        result.append(_watch_to_response(w, total_runs=total_runs, total_changes=total_changes))
+        serialized = serialize_watch(w)
+        # Attach counts as extra fields (frontend ignores unknown keys)
+        serialized["totalRuns"] = total_runs
+        serialized["totalChanges"] = total_changes
+        result.append(serialized)
     return result
 
 
 @router.get("/watches/{watch_id}", response_model=dict)
 async def get_watch(watch_id: str):
-    """Get a single watch."""
+    """Get a single watch — returns frontend Watch shape."""
+    from app.db import get_supabase
     svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
         raise HTTPException(status_code=404, detail="Watch not found")
 
-    from app.db import get_supabase
     db = get_supabase()
     runs_r = await asyncio.to_thread(
         lambda: db.table("watch_runs").select("id", count="exact").eq("watch_id", watch_id).execute()
@@ -165,28 +159,29 @@ async def get_watch(watch_id: str):
     )
     total_changes = changes_r.count if changes_r.count is not None else len(changes_r.data or [])
 
-    return _watch_to_response(watch, total_runs=total_runs, total_changes=total_changes)
+    serialized = serialize_watch(watch)
+    serialized["totalRuns"] = total_runs
+    serialized["totalChanges"] = total_changes
+    return serialized
 
 
 @router.post("/watches/{watch_id}/run")
 async def run_watch_now(watch_id: str, background_tasks: BackgroundTasks):
-    """Trigger immediate watch execution (queued in background)."""
+    """Trigger immediate watch execution. Returns run_id for polling."""
     svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
         raise HTTPException(status_code=404, detail="Watch not found")
+    # Create the run row NOW so we have a run_id to return immediately
+    run = await svc.create_run(watch_id, status="running")
+    run_id = str(run["id"])
     background_tasks.add_task(_execute_watch_background, watch_id)
-    return {"status": "queued", "watch_id": watch_id, "message": "Watch execution started"}
-
-
-async def _execute_watch_background(watch_id: str):
-    orchestrator = OrchestratorEngine()
-    await orchestrator.execute_watch(watch_id)
+    return {"status": "queued", "watch_id": watch_id, "run_id": run_id}
 
 
 @router.get("/watches/{watch_id}/history", response_model=dict)
 async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
-    """Get watch execution history."""
+    """Get watch execution history (raw shape, for backward compat)."""
     svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
@@ -212,53 +207,147 @@ async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
     }
 
 
-@router.get("/runs/recent")
-async def recent_runs(limit: int = 50):
-    """Recent runs across all watches."""
+@router.get("/watches/{watch_id}/runs", response_model=dict)
+async def get_watch_runs(watch_id: str, limit: int = 50):
+    """Get runs for a watch — returns lean frontend Run[] shape."""
+    svc = WatchService()
+    runs = await svc.get_watch_runs(watch_id, limit=limit)
+    watch = await svc.get_watch(watch_id)
+    return {"runs": [serialize_run_lean(r, watch or {}) for r in runs]}
+
+
+@router.get("/watches/{watch_id}/changes", response_model=dict)
+async def get_watch_changes(watch_id: str, limit: int = 50):
+    """Get changes for a specific watch — returns ChangeEvent[] shape."""
     from app.db import get_supabase
     db = get_supabase()
+    r = await asyncio.to_thread(
+        lambda: (
+            db.table("changes")
+            .select("*, watches(name, jurisdiction, scope)")
+            .eq("watch_id", watch_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    )
+    result = []
+    for row in (r.data or []):
+        watch = row.pop("watches", None) or {}
+        result.append(serialize_change_event(row, watch))
+    return {"changes": result}
 
-    # Single query: join runs with watch names
+
+# ── Runs ────────────────────────────────────────────────────────────────────
+
+@router.get("/runs/recent")
+async def recent_runs(limit: int = 50):
+    """Recent runs across all watches — returns lean Run[] shape."""
+    from app.db import get_supabase
+    db = get_supabase()
     r = await asyncio.to_thread(
         lambda: (
             db.table("watch_runs")
-            .select("*, watches(name)")
+            .select("*, watches(name, jurisdiction, scope)")
             .order("started_at", desc=True)
             .limit(limit)
             .execute()
         )
     )
-    runs = []
+    result = []
     for row in (r.data or []):
-        row["watch_name"] = row.pop("watches", {}).get("name") if isinstance(row.get("watches"), dict) else None
-        runs.append(row)
-    return {"runs": runs}
+        watch = row.pop("watches", None) or {}
+        result.append(serialize_run_lean(row, watch))
+    return {"runs": result}
 
 
 @router.get("/runs/{run_id}", response_model=dict)
 async def get_run(run_id: str):
-    """Get a single watch run by ID."""
+    """Get a single run — returns full frontend Run shape with diff, artifacts, ticket."""
+    from app.db import get_supabase
     svc = WatchService()
-    run = await svc.get_run(run_id)
-    if not run:
+    run_row = await svc.get_run(run_id)
+    if not run_row:
         raise HTTPException(status_code=404, detail="Run not found")
-    watch = await svc.get_watch(str(run["watch_id"])) if run.get("watch_id") else None
-    return {
-        "id": str(run["id"]),
-        "watch_id": str(run["watch_id"]),
-        "watch_name": watch.get("name") if watch else None,
-        "status": run["status"],
-        "started_at": run["started_at"],
-        "completed_at": run.get("completed_at"),
-        "duration_ms": run.get("duration_ms"),
-        "tasks_executed": run.get("tasks_executed", 0),
-        "tasks_failed": run.get("tasks_failed", 0),
-        "changes_detected": run.get("changes_detected", 0),
-        "error_message": run.get("error_message"),
-        "agent_summary": run.get("agent_summary"),
-        "agent_thoughts": run.get("agent_thoughts"),
-    }
 
+    watch = await svc.get_watch(str(run_row["watch_id"])) if run_row.get("watch_id") else None
+    db = get_supabase()
+
+    changes_r = await asyncio.to_thread(
+        lambda: db.table("changes").select("*").eq("run_id", run_id).order("created_at").execute()
+    )
+    changes = changes_r.data or []
+
+    evidence_r = await asyncio.to_thread(
+        lambda: db.table("evidence_bundles").select("*").eq("run_id", run_id).order("created_at").execute()
+    )
+    evidence = evidence_r.data or []
+
+    return serialize_run(run_row, watch, changes, evidence)
+
+
+@router.get("/runs/{run_id}/stream")
+async def run_stream(run_id: str):
+    """SSE stream for live run step updates."""
+    svc = WatchService()
+
+    async def events():
+        while True:
+            run = await svc.get_run(run_id)
+            if not run:
+                yield f"data: {json.dumps({'error': 'run not found'})}\n\n"
+                break
+            steps = run.get("run_steps_log") or []
+            yield f"data: {json.dumps({'steps': steps, 'status': run['status']})}\n\n"
+            if run["status"] in ("completed", "failed"):
+                break
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Changes ─────────────────────────────────────────────────────────────────
+
+@router.get("/changes", response_model=dict)
+async def list_changes(limit: int = 50, watch_id: Optional[str] = None):
+    """List changes across all watches — returns ChangeEvent[] shape."""
+    from app.db import get_supabase
+    db = get_supabase()
+
+    def _query():
+        q = (
+            db.table("changes")
+            .select("*, watches(name, jurisdiction, scope)")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if watch_id:
+            q = q.eq("watch_id", watch_id)
+        return q.execute()
+
+    r = await asyncio.to_thread(_query)
+    result = []
+    for row in (r.data or []):
+        watch = row.pop("watches", None) or {}
+        result.append(serialize_change_event(row, watch))
+    return {"changes": result}
+
+
+# ── Globe ───────────────────────────────────────────────────────────────────
+
+@router.get("/globe-points", response_model=dict)
+async def globe_points():
+    """Derive globe data from real watches — returns GlobePoint[]."""
+    svc = WatchService()
+    watches = await svc.list_watches(DEFAULT_ORG_ID)
+    return {"points": serialize_globe_points(watches)}
+
+
+# ── Evidence ─────────────────────────────────────────────────────────────────
 
 @router.get("/evidence", response_model=dict)
 async def list_evidence_bundles(limit: int = 50, offset: int = 0):
@@ -277,6 +366,8 @@ async def get_evidence_bundle(bundle_id: str):
         raise HTTPException(status_code=404, detail="Evidence bundle not found")
     return bundle
 
+
+# ── Health ───────────────────────────────────────────────────────────────────
 
 @router.get("/health")
 async def health():

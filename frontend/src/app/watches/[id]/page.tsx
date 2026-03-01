@@ -2,13 +2,30 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { watches, runs } from "@/lib/mockData";
+import useSWR from "swr";
+import { api } from "@/lib/api";
 
 export default function WatchDetailPage() {
   const params = useParams();
   const id = params.id as string;
-  const watch = watches.find((w) => w.id === id);
-  const watchRuns = watch ? runs.filter((r) => r.watchId === watch.id) : [];
+
+  const { data: watch, isLoading: watchLoading } = useSWR(
+    id ? `watch/${id}` : null,
+    () => api.watches.get(id)
+  );
+  const { data: watchRuns = [], isLoading: runsLoading } = useSWR(
+    id ? `watch/${id}/runs` : null,
+    () => api.watches.runs(id),
+    { refreshInterval: 15_000 }
+  );
+
+  if (watchLoading) {
+    return (
+      <div className="p-6 md:p-8">
+        <p className="text-muted-foreground">Loading watch…</p>
+      </div>
+    );
+  }
 
   if (!watch) {
     return (
@@ -43,9 +60,16 @@ export default function WatchDetailPage() {
             >
               {watch.status}
             </span>
-            <span className="text-sm text-muted-foreground">
-              Next run: {new Date(watch.nextRunAt).toLocaleString()}
-            </span>
+            {watch.nextRunAt && (
+              <span className="text-sm text-muted-foreground">
+                Next run: {new Date(watch.nextRunAt).toLocaleString()}
+              </span>
+            )}
+            {watch.jurisdictions.length > 0 && (
+              <span className="text-sm text-muted-foreground">
+                {watch.jurisdictions.join(", ")}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -53,7 +77,11 @@ export default function WatchDetailPage() {
       <section className="mt-10">
         <h2 className="text-lg font-semibold text-foreground">Run history</h2>
         <div className="mt-4 space-y-2">
-          {watchRuns.length === 0 ? (
+          {runsLoading ? (
+            <div className="rounded-xl border border-border bg-card/80 p-6 text-center text-muted-foreground">
+              Loading runs…
+            </div>
+          ) : watchRuns.length === 0 ? (
             <div className="rounded-xl border border-border bg-card/80 p-6 text-center text-muted-foreground">
               No runs yet. Use the Dashboard &quot;Run all&quot; to execute watches.
             </div>

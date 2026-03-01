@@ -1,9 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { watches } from "@/lib/mockData";
+import useSWR from "swr";
+import { api } from "@/lib/api";
 
 export default function WatchesPage() {
+  const { data: watches = [], isLoading } = useSWR("watches", api.watches.list, {
+    refreshInterval: 30_000,
+  });
+
   return (
     <div className="p-6 md:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -22,10 +27,14 @@ export default function WatchesPage() {
       </div>
 
       <div className="mt-8 space-y-3">
-        {watches.length === 0 ? (
+        {isLoading ? (
+          <div className="rounded-xl border border-border bg-card/80 p-8 text-center text-muted-foreground">
+            Loading watches…
+          </div>
+        ) : watches.length === 0 ? (
           <div className="rounded-xl border border-border border-dashed bg-card/80 p-12 text-center text-muted-foreground">
-            No watches. Create one to monitor regulations or vendor policies.
-            <Link href="/watches/new" className="ml-1 text-primary hover:underline">
+            No watches. Create one to monitor regulations or vendor policies.{" "}
+            <Link href="/watches/new" className="text-primary hover:underline">
               Create watch
             </Link>
           </div>
@@ -40,7 +49,9 @@ export default function WatchesPage() {
                 <p className="font-medium text-foreground">{w.name}</p>
                 <p className="mt-0.5 text-sm text-muted-foreground">{w.description}</p>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Next run: {new Date(w.nextRunAt).toLocaleString()}
+                  {w.nextRunAt
+                    ? `Next run: ${new Date(w.nextRunAt).toLocaleString()}`
+                    : "No next run scheduled"}
                   {w.lastRunAt && ` · Last: ${new Date(w.lastRunAt).toLocaleString()}`}
                 </p>
               </div>

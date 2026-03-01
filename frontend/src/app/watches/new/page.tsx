@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import Link from "next/link";
-import { createWatch } from "@/lib/api";
+import { api } from "@/lib/api";
 
 export default function NewWatchPage() {
   const router = useRouter();
@@ -18,20 +18,17 @@ export default function NewWatchPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const watch = await createWatch({
+      const watch = await api.watches.create({
         name,
         description: description || undefined,
-        type,
         config: {
           targets: [
             {
               name: name || "Default target",
-              description: description || name,
               search_query: name,
               extraction_instructions: "Extract the main regulatory or policy text.",
             },
           ],
-          schedule: { cron: "0 9 * * *", timezone: "UTC" },
         },
       });
       router.push(`/watches/${watch.id}`);

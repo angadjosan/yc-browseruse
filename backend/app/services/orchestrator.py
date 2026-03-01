@@ -309,8 +309,20 @@ class OrchestratorEngine:
                 search_query=tool_input.get("search_query"),
                 extraction_instructions=tool_input.get("extraction_instructions", "Extract the main content."),
             )
+            # Write "running" step before task starts
+            await self._append_run_step(run_id, {
+                "name": task.target_name[:40],
+                "status": "running",
+                "timestamp": datetime.utcnow().isoformat(),
+            })
             try:
                 result = await self.execute_browser_use_task(task)
+                # Update to "done"
+                await self._append_run_step(run_id, {
+                    "name": task.target_name[:40],
+                    "status": "done",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
                 return _task_result(
                     task_id=task.id,
                     target_name=task.target_name,
@@ -323,6 +335,11 @@ class OrchestratorEngine:
                 )
             except Exception as e:
                 logger.warning(f"[spawn] task={task.id} failed: {e}")
+                await self._append_run_step(run_id, {
+                    "name": task.target_name[:40],
+                    "status": "retry",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
                 return _task_result(
                     task_id=task.id,
                     target_name=task.target_name,
@@ -766,6 +783,23 @@ If no viable alternative, return {{}}.
         except Exception:
             logger.exception("adapt_task failed")
             return None
+
+    # ── Run step logging ───────────────────────────────────────────────
+
+    async def _append_run_step(self, run_id: str, step: Dict[str, Any]) -> None:
+        """Append a step entry to run_steps_log for real-time frontend polling."""
+        try:
+            run = await self.watch_service.get_run(run_id)
+            steps = (run or {}).get("run_steps_log") or []
+            steps.append(step)
+            await asyncio.to_thread(
+                lambda: self.db.table("watch_runs")
+                .update({"run_steps_log": steps})
+                .eq("id", run_id)
+                .execute()
+            )
+        except Exception:
+            logger.debug(f"[run={run_id}] _append_run_step failed (column may not exist yet)")
 
     # ── Helpers ────────────────────────────────────────────────────────
 

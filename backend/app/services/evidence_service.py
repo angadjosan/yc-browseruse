@@ -1,4 +1,9 @@
-"""Generates and stores audit-ready evidence bundles (impact memo, diff, screenshots)."""
+"""Generates and stores audit-ready evidence bundles (impact memo, diff, screenshots).
+
+AI usage locked to compliance.md / TECHNICAL_DESIGN.md: impact memos are generated
+via Anthropic Claude with a fixed prompt structure (What Changed, Why It Matters,
+Immediate Actions Required, Timeline) for judge-friendly, audit-ready output.
+"""
 import hashlib
 import hmac
 import json
@@ -56,14 +61,13 @@ class EvidenceService:
         semantic_diff: Dict[str, Any],
         target_name: str,
     ) -> str:
-        """Generate impact memo using Claude if available."""
+        """Generate professional impact memo via Claude (TECHNICAL_DESIGN §2.5 / compliance.md §7)."""
         key = self._config.get("anthropic_api_key")
         if not key:
-            return f"Change detected for {target_name}. Impact: {semantic_diff.get('impact_level', 'medium')}. Review diff and recommended actions."
-        try:
-            from anthropic import Anthropic
-            client = Anthropic(api_key=key)
-            prompt = f"""
+            return f"Change detected for {target_name}. Impact: {semantic_diff.get('impact_level', 'medium')}. Configure ANTHROPIC_API_KEY for full impact memos."
+        from anthropic import Anthropic
+        client = Anthropic(api_key=key)
+        prompt = f"""
 Generate a concise compliance impact memo for this detected change.
 
 Target: {target_name}
@@ -78,9 +82,10 @@ Key Changes:
 Sections Affected:
 {', '.join(semantic_diff.get('sections_affected', []))}
 
-Format:
+Format the memo as follows:
+
 ## What Changed
-[2-3 sentences]
+[2-3 sentences explaining the change in plain language]
 
 ## Why It Matters
 [2-3 sentences on compliance/business impact]
@@ -88,19 +93,21 @@ Format:
 ## Immediate Actions Required
 - [Specific action 1]
 - [Specific action 2]
+- [Specific action 3]
 
-Keep it professional and actionable for legal/compliance teams.
+## Timeline
+[Expected timeline for review and implementation]
+
+Keep it professional, concise, and actionable for legal/compliance teams.
 """
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1500,
-                temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-                system="You are a compliance officer writing impact memos for legal teams.",
-            )
-            return response.content[0].text if response.content else ""
-        except Exception:
-            return f"Impact memo could not be generated. Summary: {semantic_diff.get('summary', 'N/A')}"
+        response = client.messages.create(
+            model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
+            max_tokens=1500,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a compliance officer writing impact memos for legal teams.",
+        )
+        return response.content[0].text if response.content else ""
 
     async def generate_evidence_bundle(
         self,

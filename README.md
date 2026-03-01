@@ -69,6 +69,7 @@ Add these to the project root `.env` (or backend `.env`). Backend reads them at 
 |----------|--------|
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Database and storage (required for backend). |
 | `ANTHROPIC_API_KEY` | Claude — orchestrator plans and semantic diff. |
+| `CLAUDE_MODEL` | Claude model name (e.g. `claude-sonnet-4-20250514`). Optional; has a default. |
 | `BROWSER_USE_API_KEY` | Browser-Use — real browser automation. Without this, runs use mock data. |
 | `LINEAR_API_KEY` | Create Linear issues when a change is detected. |
 | `SLACK_BOT_TOKEN` | Send Slack notifications. |

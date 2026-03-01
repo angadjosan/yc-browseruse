@@ -14,7 +14,8 @@ anthropic>=0.18.0
 httpx>=0.26.0
 python-multipart>=0.0.6
 
-# Optional: browser-use (uncomment when using)
+# Browser automation (TECHNICAL_DESIGN §2.1). Requires Python 3.11+.
+# Uncomment when using Python 3.11+; without it, runs use mock data.
 # browser-use>=0.1.0
 
 # Utils

@@ -1,4 +1,9 @@
-"""Detects changes between snapshots: hash, text diff, optional Claude semantic diff."""
+"""Detects changes between snapshots: hash, text diff, Claude semantic diff.
+
+AI usage locked to compliance.md / TECHNICAL_DESIGN §2.4: semantic analysis
+via Anthropic Claude (summary, impact level, sections affected, key changes,
+recommended actions) for compliance-focused change detection.
+"""
 import re
 from difflib import unified_diff
 from typing import Any, Dict, List, Optional
@@ -105,7 +110,7 @@ Be concise and actionable. Use clear section headers.
 """
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
                 max_tokens=2048,
                 temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],

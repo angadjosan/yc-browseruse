@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from postgrest.exceptions import APIError
+
 from app.db import get_supabase
 from app.schemas.watch import CreateWatchRequest, WatchResponse, WatchRunSummary
 
@@ -100,6 +102,8 @@ class WatchService:
         tasks_failed: Optional[int] = None,
         changes_detected: Optional[int] = None,
         error_message: Optional[str] = None,
+        agent_summary: Optional[str] = None,
+        agent_thoughts: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
         payload = {}
         if status is not None:
@@ -116,10 +120,23 @@ class WatchService:
             payload["changes_detected"] = changes_detected
         if error_message is not None:
             payload["error_message"] = error_message
+        if agent_summary is not None:
+            payload["agent_summary"] = agent_summary
+        if agent_thoughts is not None:
+            payload["agent_thoughts"] = agent_thoughts
         if not payload:
             return await self.get_run(run_id)
-        r = self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
-        return r.data[0] if r.data else None
+        try:
+            r = self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+            return r.data[0] if r.data else None
+        except APIError as e:
+            if e.code == "PGRST204" and ("agent_summary" in str(e) or "agent_thoughts" in str(e)):
+                for key in ("agent_summary", "agent_thoughts"):
+                    payload.pop(key, None)
+                if payload:
+                    r = self.db.table("watch_runs").update(payload).eq("id", run_id).execute()
+                    return r.data[0] if r.data else None
+            raise
 
     async def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         r = self.db.table("watch_runs").select("*").eq("id", run_id).execute()

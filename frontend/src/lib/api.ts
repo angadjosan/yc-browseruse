@@ -14,6 +14,8 @@ export type Watch = {
   last_run_at?: string | null;
 };
 
+export type AgentThought = Record<string, unknown>;
+
 export type WatchRun = {
   id: string;
   watch_id: string;
@@ -25,6 +27,10 @@ export type WatchRun = {
   tasks_failed: number;
   changes_detected: number;
   error_message: string | null;
+  /** Short summary of agent reasoning (from browser-use model_thoughts) */
+  agent_summary?: string | null;
+  /** Full agent reasoning per target */
+  agent_thoughts?: Array<{ target_name: string; thoughts: AgentThought[] }> | null;
 };
 
 export type EvidenceBundle = {
@@ -95,6 +101,12 @@ export async function getEvidenceBundle(bundleId: string): Promise<EvidenceBundl
 }
 
 export type RecentRun = WatchRun & { watch_name?: string };
+
+export async function getRun(runId: string): Promise<WatchRun & { watch_name?: string }> {
+  const r = await fetch(`${API_URL}/api/runs/${runId}`);
+  if (!r.ok) throw new Error("Run not found");
+  return r.json();
+}
 
 export async function getRecentRuns(limit?: number): Promise<RecentRun[]> {
   const params = limit != null ? `?limit=${limit}` : "";

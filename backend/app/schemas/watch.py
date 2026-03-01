@@ -40,6 +40,8 @@ class WatchRunSummary(BaseModel):
     tasks_failed: int = 0
     changes_detected: int = 0
     error_message: Optional[str] = None
+    agent_summary: Optional[str] = None
+    agent_thoughts: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         from_attributes = True

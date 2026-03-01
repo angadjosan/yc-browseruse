@@ -92,7 +92,7 @@ async def _execute_watch_background(watch_id: str):
 
 @router.get("/watches/{watch_id}/history", response_model=dict)
 async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
-    """Get watch execution history."""
+    """Get watch execution history (runs for this watch)."""
     svc = WatchService()
     watch = await svc.get_watch(watch_id)
     if not watch:
@@ -111,8 +111,35 @@ async def get_watch_history(watch_id: str, limit: int = 50, offset: int = 0):
             tasks_failed=r.get("tasks_failed", 0),
             changes_detected=r.get("changes_detected", 0),
             error_message=r.get("error_message"),
+            agent_summary=r.get("agent_summary"),
+            agent_thoughts=r.get("agent_thoughts"),
         ).model_dump() for r in runs],
         "total": len(runs),
+    }
+
+
+@router.get("/runs/{run_id}", response_model=dict)
+async def get_run(run_id: str):
+    """Get a single watch run by ID."""
+    svc = WatchService()
+    run = await svc.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    watch = await svc.get_watch(str(run["watch_id"])) if run.get("watch_id") else None
+    return {
+        "id": str(run["id"]),
+        "watch_id": str(run["watch_id"]),
+        "watch_name": watch.get("name") if watch else None,
+        "status": run["status"],
+        "started_at": run["started_at"],
+        "completed_at": run.get("completed_at"),
+        "duration_ms": run.get("duration_ms"),
+        "tasks_executed": run.get("tasks_executed", 0),
+        "tasks_failed": run.get("tasks_failed", 0),
+        "changes_detected": run.get("changes_detected", 0),
+        "error_message": run.get("error_message"),
+        "agent_summary": run.get("agent_summary"),
+        "agent_thoughts": run.get("agent_thoughts"),
     }
 
 

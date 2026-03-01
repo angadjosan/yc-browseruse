@@ -1,28 +1,18 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { CommandBar } from "@/components/dashboard/CommandBar";
 import { WatchesCard } from "@/components/dashboard/WatchesCard";
 import { ChangesCard } from "@/components/dashboard/ChangesCard";
-import { RunsCard } from "@/components/dashboard/RunsCard";
 import { JurisdictionGlobe } from "@/components/dashboard/JurisdictionGlobe";
 import { api } from "@/lib/api";
-import type { RunStep } from "@/lib/types";
 import { LayoutDashboard, Radar } from "lucide-react";
 
-const RUN_STEP_NAMES: string[] = [
-  "Searching",
-  "Navigating",
-  "Capturing",
-  "Hashing",
-  "Diffing",
-  "Ticketing",
-];
-
 export default function DashboardPage() {
+  const router = useRouter();
   const [activeJurisdiction, setActiveJurisdiction] = React.useState<string | null>(null);
-  const [currentRunSteps, setCurrentRunSteps] = React.useState<RunStep[] | null>(null);
   const [isRunning, setIsRunning] = React.useState(false);
 
   const { data: watches = [], mutate: mutateWatches } = useSWR("watches", api.watches.list, {
@@ -34,51 +24,22 @@ export default function DashboardPage() {
   const { data: globePoints = [] } = useSWR("globe", api.globe.points, {
     refreshInterval: 60_000,
   });
-  const { data: recentRuns = [] } = useSWR("runs/recent", api.runs.recent, {
-    refreshInterval: 30_000,
-  });
-
-  const completionRate = recentRuns.length
-    ? Math.round(
-        (recentRuns.filter((r) => !r.selfHealed).length / recentRuns.length) * 100
-      )
-    : 98;
-  const falsePositiveRate = recentRuns.length
-    ? Math.round(
-        (recentRuns.filter((r) => r.selfHealed).length / recentRuns.length) * 100
-      )
-    : 2;
 
   const runAll = React.useCallback(async () => {
     if (isRunning || watches.length === 0) return;
     setIsRunning(true);
-    setCurrentRunSteps(
-      RUN_STEP_NAMES.map((name) => ({ name, status: "pending" as const }))
-    );
 
     try {
       const { run_id } = await api.watches.run(watches[0].id);
-
-      const poll = setInterval(async () => {
-        try {
-          const run = await api.runs.get(run_id);
-          setCurrentRunSteps(run.steps);
-          if (run.endedAt && run.endedAt !== run.startedAt) {
-            clearInterval(poll);
-            setIsRunning(false);
-            mutateChanges();
-            mutateWatches();
-          }
-        } catch {
-          clearInterval(poll);
-          setIsRunning(false);
-        }
-      }, 2000);
+      setIsRunning(false);
+      // Send user to run detail page so they see live steps (worker updates run_steps_log)
+      router.push(`/app/run/${run_id}`);
+      mutateChanges();
+      mutateWatches();
     } catch {
       setIsRunning(false);
-      setCurrentRunSteps(null);
     }
-  }, [isRunning, watches, mutateChanges, mutateWatches]);
+  }, [isRunning, watches, router, mutateChanges, mutateWatches]);
 
   return (
     <div className="relative min-h-screen">
@@ -116,7 +77,7 @@ export default function DashboardPage() {
           }}
         />
 
-        <div className="grid gap-6 md:grid-cols-3">
+        <div className="grid gap-6 md:grid-cols-2">
           <WatchesCard
             watches={watches}
             activeJurisdiction={activeJurisdiction}
@@ -125,13 +86,6 @@ export default function DashboardPage() {
           <ChangesCard
             activeJurisdiction={activeJurisdiction}
             changes={changes}
-          />
-          <RunsCard
-            currentRunSteps={currentRunSteps}
-            isRunning={isRunning}
-            lastFailureSummary={null}
-            completionRate={completionRate}
-            falsePositiveRate={falsePositiveRate}
           />
         </div>
 

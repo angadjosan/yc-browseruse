@@ -9,28 +9,50 @@ import { DiffViewer } from "@/components/run/DiffViewer";
 import { EvidenceBundle } from "@/components/run/EvidenceBundle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, ArrowLeft, Loader2 } from "lucide-react";
+import { ExternalLink, ArrowLeft, Loader2, Radio } from "lucide-react";
+
+function useRunWithRetry(runId: string | undefined) {
+  const { data: run, error, isLoading } = useSWR(
+    runId ? `run/${runId}` : null,
+    () => api.runs.get(runId!),
+    {
+      refreshInterval: (data) =>
+        !data || data.endedAt === data.startedAt ? 2000 : 0,
+      errorRetryCount: 10,
+      errorRetryInterval: 2000,
+      shouldRetryOnError: true,
+    }
+  );
+  return { run, error, isLoading };
+}
 
 export default function RunDetailPage() {
   const params = useParams();
   const id = typeof params.id === "string" ? params.id : params.id?.[0];
 
-  const { data: run, isLoading } = useSWR(
-    id ? `run/${id}` : null,
-    () => api.runs.get(id!),
-    {
-      // Keep refreshing if the run is still in progress
-      refreshInterval: (data) =>
-        !data || data.endedAt === data.startedAt ? 2000 : 0,
-    }
-  );
+  const { run, error, isLoading } = useRunWithRetry(id);
 
-  if (isLoading || !run) {
+  const isRunning = run && run.endedAt === run.startedAt;
+
+  if (isLoading && !run) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 p-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        <p className="text-muted-foreground">Run is starting…</p>
+        <Button variant="outline" size="sm" asChild>
+          <Link href="/app">
+            <ArrowLeft className="mr-2 h-4 w-4" /> Back to Dashboard
+          </Link>
+        </Button>
+      </div>
+    );
+  }
+
+  if (error || !run) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 p-12">
         <p className="text-muted-foreground">
-          {isLoading ? "Loading run…" : "Run not found."}
+          Run not found. It may still be starting or the run ID is invalid.
         </p>
         <Button variant="outline" size="sm" asChild>
           <Link href="/app">
@@ -50,9 +72,18 @@ export default function RunDetailPage() {
               <ArrowLeft className="h-4 w-4" /> Back
             </Link>
           </Button>
-          <h1 className="mt-2 text-2xl font-bold text-foreground">
-            {run.watchName ?? run.watchId}
-          </h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold text-foreground">
+              {run.watchName ?? run.watchId}
+            </h1>
+            {isRunning ? (
+              <Badge variant="secondary" className="gap-1">
+                <Radio className="h-3 w-3 animate-pulse" /> Running
+              </Badge>
+            ) : (
+              <Badge variant="healthy">Completed</Badge>
+            )}
+          </div>
           <div className="mt-2 flex flex-wrap gap-2">
             {run.ticket.provider && (
               <Badge variant="secondary">{run.ticket.provider}</Badge>
@@ -77,6 +108,11 @@ export default function RunDetailPage() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-1">
+          {isRunning && (
+            <p className="mb-2 text-xs text-muted-foreground">
+              Live steps from worker — updates every few seconds.
+            </p>
+          )}
           <RunTimeline steps={run.steps} />
         </div>
         <div className="lg:col-span-1">

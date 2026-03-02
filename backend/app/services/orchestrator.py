@@ -97,8 +97,10 @@ class OrchestratorEngine:
         if not watch:
             return {"run_id": None, "status": "error", "error": "Watch not found"}
 
+        org_id = str(watch.get("organization_id", ""))
+
         if run_id is None:
-            run = await self.watch_service.create_run(watch_id, status="running")
+            run = await self.watch_service.create_run(watch_id, organization_id=org_id, status="running")
             run_id = str(run["id"])
         start = time.time()
         changes_count = 0
@@ -137,6 +139,7 @@ class OrchestratorEngine:
                     url=current_snapshot["url"],
                     content_text=current_snapshot["content_text"],
                     content_hash=current_snapshot["content_hash"],
+                    organization_id=org_id,
                     screenshot_url=current_snapshot.get("screenshot_url"),
                 )
 
@@ -178,6 +181,7 @@ class OrchestratorEngine:
                         change_row = {
                             "watch_id": watch_id,
                             "run_id": run_id,
+                            "organization_id": org_id,
                             "target_name": target_name,
                             "diff_summary": (change.get("semantic_diff") or {}).get("summary"),
                             "diff_details": {
@@ -195,7 +199,8 @@ class OrchestratorEngine:
                         change_id = cr.data[0]["id"] if cr.data else None
                         if change_id:
                             evidence = await self.evidence_service.generate_evidence_bundle(
-                                change, current_snapshot, previous, run_id, change_id
+                                change, current_snapshot, previous, run_id, change_id,
+                                organization_id=org_id,
                             )
                             integrations = watch.get("integrations") or {}
                             notify_results = await self.notification_hub.notify_change(

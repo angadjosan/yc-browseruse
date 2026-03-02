@@ -120,6 +120,7 @@ Keep it professional, concise, and actionable for legal/compliance teams."""
         previous_snapshot: Dict[str, Any],
         run_id: str,
         change_id: str,
+        organization_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create evidence bundle and persist to DB."""
         bundle_id = str(uuid.uuid4())
@@ -161,6 +162,8 @@ Keep it professional, concise, and actionable for legal/compliance teams."""
             "content_hash": current_snapshot.get("content_hash"),
             "audit_metadata": audit_metadata,
         }
+        if organization_id:
+            row["organization_id"] = organization_id
         self.db.table("evidence_bundles").insert(row).execute()
         return {
             **row,
@@ -171,13 +174,10 @@ Keep it professional, concise, and actionable for legal/compliance teams."""
         r = self.db.table("evidence_bundles").select("*").eq("id", bundle_id).execute()
         return r.data[0] if r.data else None
 
-    async def list_bundles(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """List all evidence bundles (newest first)."""
-        r = (
-            self.db.table("evidence_bundles")
-            .select("*")
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
+    async def list_bundles(self, organization_id: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """List evidence bundles (newest first), optionally filtered by org."""
+        q = self.db.table("evidence_bundles").select("*")
+        if organization_id:
+            q = q.eq("organization_id", organization_id)
+        r = q.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
         return r.data or []

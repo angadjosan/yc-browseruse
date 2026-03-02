@@ -34,6 +34,7 @@ class WatchService:
         watch_type: str = "custom",
         config: Optional[Dict[str, Any]] = None,
         integrations: Optional[Dict[str, Any]] = None,
+        created_by: Optional[str] = None,
         regulation_title: Optional[str] = None,
         risk_rationale: Optional[str] = None,
         jurisdiction: Optional[str] = None,
@@ -52,12 +53,15 @@ class WatchService:
             "organization_id": organization_id,
             "name": name,
             "description": description or "",
+            "type": watch_type,
             "config": config,
             "schedule": schedule,
             "integrations": integrations or {},
             "status": "active",
         }
 
+        if created_by is not None:
+            row["created_by"] = created_by
         if regulation_title is not None:
             row["regulation_title"] = regulation_title
         if risk_rationale is not None:
@@ -144,9 +148,16 @@ class WatchService:
     async def create_run(
         self,
         watch_id: str,
+        organization_id: Optional[str] = None,
         status: str = "running",
     ) -> Dict[str, Any]:
+        # If org_id not provided, look it up from the watch
+        if not organization_id:
+            watch = await self.get_watch(watch_id)
+            organization_id = str(watch["organization_id"]) if watch else None
         row = {"watch_id": watch_id, "status": status}
+        if organization_id:
+            row["organization_id"] = organization_id
         r = await asyncio.to_thread(
             lambda: self.db.table("watch_runs").insert(row).execute()
         )
@@ -218,9 +229,14 @@ class WatchService:
         url: str,
         content_text: str,
         content_hash: str,
+        organization_id: Optional[str] = None,
         screenshot_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        # If org_id not provided, look it up from the watch
+        if not organization_id:
+            watch = await self.get_watch(watch_id)
+            organization_id = str(watch["organization_id"]) if watch else None
         row = {
             "watch_id": watch_id,
             "run_id": run_id,
@@ -231,6 +247,8 @@ class WatchService:
             "screenshot_url": screenshot_url,
             "metadata": metadata or {},
         }
+        if organization_id:
+            row["organization_id"] = organization_id
         r = await asyncio.to_thread(
             lambda: self.db.table("snapshots").insert(row).execute()
         )

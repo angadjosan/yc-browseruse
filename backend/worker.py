@@ -22,7 +22,6 @@ from app.serializers import serialize_watch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("worker")
 
-DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 _shutdown = False
 
 
@@ -52,7 +51,13 @@ async def handle_analyze_product(payload: dict):
     """Run product analysis and write status updates to Redis."""
     job_id = payload["job_id"]
     product_url = payload["product_url"]
-    logger.info(f"Starting analyze_product: job_id={job_id} url={product_url}")
+    organization_id = payload.get("organization_id")
+    if not organization_id:
+        logger.error(f"analyze_product job_id={job_id} missing organization_id")
+        set_analysis_status(job_id, {"status": "failed", "error": "Missing organization_id"})
+        return
+
+    logger.info(f"Starting analyze_product: job_id={job_id} url={product_url} org={organization_id}")
 
     def _log(msg: str):
         status = get_analysis_status(job_id) or {}
@@ -64,7 +69,12 @@ async def handle_analyze_product(payload: dict):
         set_analysis_status(job_id, status)
 
     # Initialize
-    set_analysis_status(job_id, {"status": "running", "product_url": product_url, "logs": []})
+    set_analysis_status(job_id, {
+        "status": "running",
+        "product_url": product_url,
+        "organization_id": organization_id,
+        "logs": [],
+    })
 
     def _on_risks(risks: list):
         existing = get_analysis_status(job_id) or {}
@@ -86,7 +96,7 @@ async def handle_analyze_product(payload: dict):
         analyzer = ProductAnalyzer(log_fn=_log, on_risks_found=_on_risks)
         result = await analyzer.analyze_product_url(
             product_url=product_url,
-            organization_id=DEFAULT_ORG_ID,
+            organization_id=organization_id,
         )
         existing = get_analysis_status(job_id) or {}
         existing_logs = existing.get("logs", [])
@@ -100,6 +110,7 @@ async def handle_analyze_product(payload: dict):
         final_status: dict = {
             "status": "completed",
             "product_url": product_url,
+            "organization_id": organization_id,
             "logs": existing_logs,
             "product_info": {
                 "content_preview": result["product_info"]["content"][:500],
@@ -146,15 +157,29 @@ async def handle_analyze_product(payload: dict):
 
 
 async def handle_run_all(payload: dict):
-    """Enqueue a watch_run job for every active watch."""
-    logger.info("Handling run_all: loading active watches")
-    svc = WatchService()
-    watches = await svc.list_watches(DEFAULT_ORG_ID)
+    """Enqueue a watch_run job for every active watch in the given org."""
+    organization_id = payload.get("organization_id")
+    if not organization_id:
+        logger.error("run_all job missing organization_id — listing all orgs")
+        # Fallback: list all active watches across all orgs
+        from app.db import get_supabase
+        db = get_supabase()
+        r = await asyncio.to_thread(
+            lambda: db.table("watches").select("id, organization_id").eq("status", "active").execute()
+        )
+        watches = r.data or []
+    else:
+        logger.info(f"Handling run_all for org={organization_id}")
+        svc = WatchService()
+        watches = await svc.list_watches(organization_id)
+
     count = 0
+    svc = WatchService()
     for w in watches:
         if w.get("status") != "active":
             continue
-        run = await svc.create_run(str(w["id"]), status="running")
+        org_id = str(w.get("organization_id", organization_id or ""))
+        run = await svc.create_run(str(w["id"]), organization_id=org_id, status="running")
         enqueue_job("watch_run", {"watch_id": str(w["id"]), "run_id": str(run["id"])})
         count += 1
     logger.info(f"run_all: enqueued {count} watch_run jobs")
@@ -184,7 +209,10 @@ async def dispatch(job: dict):
 # ── Scheduler ────────────────────────────────────────────────────────────────
 
 def start_scheduler():
-    """Start APScheduler to enqueue due watches every 15 minutes."""
+    """Start APScheduler to enqueue due watches every 15 minutes.
+
+    Iterates ALL active watches across ALL organizations.
+    """
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
@@ -196,11 +224,15 @@ def start_scheduler():
 
     async def _tick():
         try:
-            svc = WatchService()
-            watches = await svc.list_watches(DEFAULT_ORG_ID)
+            from app.db import get_supabase
+            db = get_supabase()
+            # Fetch all active watches across all orgs
+            r = await asyncio.to_thread(
+                lambda: db.table("watches").select("*").eq("status", "active").execute()
+            )
+            watches = r.data or []
+
             for w in watches:
-                if w.get("status") != "active":
-                    continue
                 schedule = w.get("schedule") or {}
                 cron_expr = schedule.get("cron")
                 if not cron_expr:
@@ -218,8 +250,10 @@ def start_scheduler():
                             continue
                     except Exception:
                         pass
-                logger.info(f"Scheduler: enqueuing watch {w['id']} ({w['name']})")
-                run = await svc.create_run(str(w["id"]), status="running")
+                org_id = str(w.get("organization_id", ""))
+                svc = WatchService()
+                logger.info(f"Scheduler: enqueuing watch {w['id']} ({w['name']}) org={org_id}")
+                run = await svc.create_run(str(w["id"]), organization_id=org_id, status="running")
                 enqueue_job("watch_run", {"watch_id": str(w["id"]), "run_id": str(run["id"])})
         except Exception:
             logger.exception("Scheduler tick failed")

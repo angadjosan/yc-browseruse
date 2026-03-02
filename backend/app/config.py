@@ -7,6 +7,7 @@ from functools import lru_cache
 def get_config():
     return {
         "supabase_url": os.getenv("SUPABASE_URL", "http://localhost:54321"),
+        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", ""),
         "supabase_service_role_key": os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
         "claude_model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),

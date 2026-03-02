@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { GitHubSignInButton } from "@/components/github-sign-in";
 import type { OnboardStatus, OnboardRiskRaw, OnboardLog } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -62,121 +63,25 @@ function formatInterval(seconds?: number): string {
   return "monthly";
 }
 
-// ── Inline auth form (login/signup on the analyze page) ──────────────────
+// ── Inline auth gate (GitHub OAuth on the analyze page) ──────────────────
 
 function InlineAuth({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const { signIn, signUp, session } = useAuth();
-  const [mode, setMode] = useState<"login" | "signup">("signup");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const { session } = useAuth();
 
   useEffect(() => {
     if (session) onAuthenticated();
   }, [session, onAuthenticated]);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setSubmitting(true);
-    try {
-      if (mode === "login") {
-        await signIn(email, password);
-      } else {
-        await signUp(email, password, name);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
     <div className="w-full max-w-xl">
       <div className="rounded-2xl border border-border bg-card/80 p-8 backdrop-blur-sm shadow-2xl">
         <h2 className="text-lg font-semibold text-foreground mb-1">
-          {mode === "signup" ? "Create an account to get started" : "Sign in to continue"}
+          Sign in to get started
         </h2>
         <p className="text-sm text-muted-foreground mb-6">
-          {mode === "signup"
-            ? "We'll analyze your product and set up compliance monitors."
-            : "Sign in to your existing account."}
+          We&apos;ll analyze your product and set up compliance monitors.
         </p>
-
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {mode === "signup" && (
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="Your name"
-            />
-          )}
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="you@company.com"
-            autoFocus
-          />
-          <input
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            placeholder="Password (6+ characters)"
-          />
-
-          {error && (
-            <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
-              {error}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            {submitting
-              ? "..."
-              : mode === "signup"
-                ? "Create account"
-                : "Sign in"}
-          </button>
-        </form>
-
-        <p className="mt-4 text-center text-sm text-muted-foreground">
-          {mode === "signup" ? (
-            <>
-              Already have an account?{" "}
-              <button
-                onClick={() => { setMode("login"); setError(""); }}
-                className="font-medium text-primary hover:underline"
-              >
-                Sign in
-              </button>
-            </>
-          ) : (
-            <>
-              Don&apos;t have an account?{" "}
-              <button
-                onClick={() => { setMode("signup"); setError(""); }}
-                className="font-medium text-primary hover:underline"
-              >
-                Sign up
-              </button>
-            </>
-          )}
-        </p>
+        <GitHubSignInButton returnTo="/analyze" />
       </div>
     </div>
   );

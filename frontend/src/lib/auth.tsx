@@ -14,8 +14,7 @@ type AuthState = {
   session: Session | null;
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, name?: string) => Promise<void>;
+  signInWithGitHub: (returnTo?: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -23,8 +22,7 @@ const AuthContext = createContext<AuthState>({
   session: null,
   user: null,
   loading: true,
-  signIn: async () => {},
-  signUp: async () => {},
+  signInWithGitHub: async () => {},
   signOut: async () => {},
 });
 
@@ -50,27 +48,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+  const signInWithGitHub = useCallback(async (returnTo?: string) => {
+    // Store where to redirect after OAuth completes
+    localStorage.setItem("auth_return_to", returnTo || window.location.pathname);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "github",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
     if (error) throw error;
   }, []);
-
-  const signUp = useCallback(
-    async (email: string, password: string, name?: string) => {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { name: name || email.split("@")[0] },
-        },
-      });
-      if (error) throw error;
-    },
-    [],
-  );
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -83,8 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         session,
         user: session?.user ?? null,
         loading,
-        signIn,
-        signUp,
+        signInWithGitHub,
         signOut,
       }}
     >

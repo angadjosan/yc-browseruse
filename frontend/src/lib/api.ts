@@ -1,40 +1,85 @@
 import type { Watch, ChangeEvent, Run, GlobePoint } from "./types";
+import { getAccessToken } from "./supabase";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const headers = await authHeaders();
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (res.status === 401) throw new AuthError("Unauthorized");
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
+  const headers = await authHeaders();
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401) throw new AuthError("Unauthorized");
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
+  const headers = await authHeaders();
   const res = await fetch(`${BASE}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
+  if (res.status === 401) throw new AuthError("Unauthorized");
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const headers = await authHeaders();
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE", headers });
+  if (res.status === 401) throw new AuthError("Unauthorized");
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
 
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
+
+export type UserProfile = {
+  user: {
+    id: string;
+    email: string;
+    role: string;
+    organizationId: string;
+  };
+  organization: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+  };
+};
+
 export const api = {
+  auth: {
+    me: (): Promise<UserProfile> => get<UserProfile>("/api/me"),
+  },
   watches: {
     list: (): Promise<Watch[]> =>
       get<Watch[]>("/api/watches"),

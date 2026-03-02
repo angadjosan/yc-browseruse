@@ -1,5 +1,6 @@
 """Watch CRUD and run scheduling."""
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -8,6 +9,11 @@ from postgrest.exceptions import APIError
 
 from app.db import get_supabase
 from app.schemas.watch import CreateWatchRequest, WatchResponse, WatchRunSummary
+
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 0.5  # seconds; exponential backoff: 0.5, 1.0, 2.0
 
 
 class WatchService:
@@ -36,7 +42,7 @@ class WatchService:
         check_interval_seconds: Optional[int] = None,
         current_regulation_state: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new watch. Default schedule: daily."""
+        """Create a new watch with retry logic for transient failures."""
         schedule = config.get("schedule", {"cron": "0 9 * * *", "timezone": "UTC"}) if config else {"cron": "0 9 * * *", "timezone": "UTC"}
         if config is None:
             config = {}
@@ -52,7 +58,6 @@ class WatchService:
             "status": "active",
         }
 
-        # Add regulation-specific fields if provided
         if regulation_title is not None:
             row["regulation_title"] = regulation_title
         if risk_rationale is not None:
@@ -68,12 +73,30 @@ class WatchService:
         if current_regulation_state is not None:
             row["current_regulation_state"] = current_regulation_state
 
-        r = await asyncio.to_thread(
-            lambda: self.db.table("watches").insert(row).execute()
-        )
-        if not r.data:
-            raise ValueError("Failed to create watch")
-        return r.data[0]
+        last_err: Optional[Exception] = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                r = await asyncio.to_thread(
+                    lambda: self.db.table("watches").insert(row).execute()
+                )
+                if not r.data:
+                    raise ValueError("Supabase insert returned empty data")
+                return r.data[0]
+            except Exception as e:
+                last_err = e
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(
+                        "create_watch attempt %d/%d failed for '%s': %s — retrying in %.1fs",
+                        attempt, MAX_RETRIES, name, e, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "create_watch failed after %d attempts for '%s': %s",
+                        MAX_RETRIES, name, e,
+                    )
+        raise last_err  # type: ignore[misc]
 
     async def get_watch(self, watch_id: str) -> Optional[Dict[str, Any]]:
         r = await asyncio.to_thread(

@@ -11,6 +11,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from app.config import get_config
+from app.prompts import load_prompt
 from app.services.watch_service import WatchService
 
 logger = logging.getLogger(__name__)
@@ -300,67 +301,15 @@ Use the save_product_info action to save your findings."""
         content_len = len(product_info.get("content", ""))
         log(f"Sending {min(content_len, 8000)} chars of product info to Claude")
 
-        prompt = f"""You are a compliance expert. Analyze this product/service and identify ALL potential regulatory and compliance risks.
-
-PRODUCT URL: {product_url}
-
-PRODUCT INFORMATION:
-{product_info.get('content', '')[:8000]}
-
-Your task:
-1. Understand what the product/service does in detail
-2. Identify every regulation that could apply (major AND minor/microscopic risks)
-3. For each risk, determine exact regulatory exposure points
-4. Find the specific regulations and their current state
-
-Focus on finding microscopic regulatory differences that humans might miss. Include:
-- Data privacy regulations (GDPR, CCPA, etc.)
-- Industry-specific regulations
-- Financial compliance
-- Healthcare compliance (HIPAA, etc.)
-- Accessibility requirements
-- Security standards
-- Consumer protection laws
-- Employment law
-- International regulations
-- Emerging regulations
-
-For EACH identified risk, provide:
-- regulation_title: Official name of the regulation
-- risk_rationale: 2-3 sentences explaining WHY this regulation applies to this product
-- jurisdiction: Geographic scope (e.g., "EU", "California", "United States", "Global")
-- scope: What aspects of the product are affected
-- source_url: Official URL to the regulation text (use real government/official sources)
-- check_interval_seconds: How often to check (3600=hourly, 86400=daily, 604800=weekly)
-- initial_search_query: What to search for to find current regulation state
-
-CRITICAL: Your response must be ONLY the raw JSON array. Nothing else.
-- No markdown (no ``` or ```json)
-- No explanation, no preamble, no "Here is the JSON"
-- No text before the opening [ or after the closing ]
-- Your entire response must be parseable as JSON. Start with [ and end with ].
-
-Format:
-[
-  {{
-    "regulation_title": "...",
-    "risk_rationale": "...",
-    "jurisdiction": "...",
-    "scope": "...",
-    "source_url": "https://...",
-    "check_interval_seconds": 86400,
-    "initial_search_query": "..."
-  }}
-]
-
-Aim for 5-8 risks covering the most significant regulatory exposures. Output ONLY the JSON array."""
+        product_content = product_info.get("content", "")[:8000]
+        prompt = load_prompt(
+            "risk_analysis_user",
+            product_url=product_url,
+            product_info=product_content,
+        )
 
         try:
-            system = (
-                "You are a compliance expert. Your response must be exclusively a single JSON array. "
-                "Do not include any markdown, code fences, explanation, or text before or after the array. "
-                "Your entire reply must start with '[' and end with ']' and be valid JSON only."
-            )
+            system = load_prompt("risk_analysis_system")
             response = await client.messages.create(
                 model=model,
                 max_tokens=8192,
@@ -545,10 +494,15 @@ Steps:
         organization_id: str,
         product_url: str,
     ) -> List[Dict[str, Any]]:
-        """Step 3: Create a watch for each identified risk."""
+        """Step 3: Create a watch for each identified risk.
+
+        Returns a list of dicts. Successfully created watches have an "id" key.
+        Failed watches are returned as {"_failed": True, ...} so the caller
+        can report partial success to the user.
+        """
         log = self._log
 
-        async def _create_one(i: int, risk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        async def _create_one(i: int, risk: Dict[str, Any]) -> Dict[str, Any]:
             source_url = risk.get("source_url", "") or ""
             if not source_url.startswith(("http://", "https://")):
                 risk["source_url"] = ""
@@ -579,27 +533,47 @@ Steps:
             }
 
             log(f"Creating watch {i+1}/{len(risks)}: {watch_name}")
-            watch = await self.watch_service.create_watch(
-                organization_id=organization_id,
-                name=watch_name,
-                description=description,
-                watch_type="regulation",
-                config=config,
-                integrations={},
-                regulation_title=risk.get("regulation_title"),
-                risk_rationale=risk.get("risk_rationale"),
-                jurisdiction=risk.get("jurisdiction"),
-                scope=risk.get("scope"),
-                source_url=risk.get("source_url"),
-                check_interval_seconds=check_interval,
-                current_regulation_state=risk.get("current_state", ""),
-            )
-            log(f"  Watch created: {watch.get('id', '?')}")
-            return watch
+            try:
+                watch = await self.watch_service.create_watch(
+                    organization_id=organization_id,
+                    name=watch_name,
+                    description=description,
+                    watch_type="regulation",
+                    config=config,
+                    integrations={},
+                    regulation_title=risk.get("regulation_title"),
+                    risk_rationale=risk.get("risk_rationale"),
+                    jurisdiction=risk.get("jurisdiction"),
+                    scope=risk.get("scope"),
+                    source_url=risk.get("source_url"),
+                    check_interval_seconds=check_interval,
+                    current_regulation_state=risk.get("current_state", ""),
+                )
+                log(f"  Watch created: {watch.get('id', '?')}")
+                return watch
+            except Exception as e:
+                logger.error(
+                    "Failed to create watch '%s' (risk %d/%d): %s",
+                    watch_name, i + 1, len(risks), e,
+                )
+                log(f"  FAILED to store watch '{watch_name}': {e}")
+                return {
+                    "_failed": True,
+                    "_error": str(e),
+                    "regulation_title": risk.get("regulation_title"),
+                    "jurisdiction": risk.get("jurisdiction"),
+                }
 
-        results = await asyncio.gather(*[_create_one(i, risk) for i, risk in enumerate(risks)], return_exceptions=True)
-        watches = [w for w in results if isinstance(w, dict)]
-        log(f"All {len(watches)} watches created successfully")
+        results = await asyncio.gather(*[_create_one(i, risk) for i, risk in enumerate(risks)])
+        watches = [w for w in results if not w.get("_failed")]
+        failed = [w for w in results if w.get("_failed")]
+
+        if failed:
+            log(f"WARNING: {len(failed)}/{len(risks)} watches failed to store in Supabase:")
+            for f in failed:
+                log(f"  - {f.get('regulation_title', '?')}: {f.get('_error', 'unknown')}")
+
+        log(f"{len(watches)}/{len(risks)} watches created successfully")
         return watches
 
     def _find_matching_bracket(self, s: str, open_pos: int) -> int:

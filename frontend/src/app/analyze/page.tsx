@@ -79,7 +79,7 @@ export default function AnalyzePage() {
       try {
         const status = await api.onboard.status(jobId);
         setJobStatus(status);
-        if (status.status === "completed") {
+        if (status.status === "completed" || status.status === "completed_with_errors") {
           clearInterval(pollRef.current!);
           setFlowState("done");
         } else if (status.status === "failed") {
@@ -321,6 +321,21 @@ export default function AnalyzePage() {
                 {jobStatus.watches_created ?? 0} watches
               </span>
             </div>
+
+            {(jobStatus.watches_failed ?? 0) > 0 && (
+              <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 flex items-start gap-2.5">
+                <AlertCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-yellow-500">
+                    {jobStatus.watches_failed} monitor{jobStatus.watches_failed === 1 ? "" : "s"} failed to save
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {jobStatus.watches_created ?? 0} of {jobStatus.risks_identified ?? 0} were stored successfully.
+                    Re-analyze the product to retry the missing monitors.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Risk list — full detail */}
             <div className="rounded-xl border border-border bg-card/80 p-4 backdrop-blur-sm max-h-[40vh] overflow-auto">

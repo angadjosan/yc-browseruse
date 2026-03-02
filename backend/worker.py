@@ -90,7 +90,14 @@ async def handle_analyze_product(payload: dict):
         )
         existing = get_analysis_status(job_id) or {}
         existing_logs = existing.get("logs", [])
-        set_analysis_status(job_id, {
+
+        total_risks = len(result["risks"])
+        watches_stored = result["watches"]
+        watches_expected = total_risks
+        watches_created = len(watches_stored)
+        watches_failed = watches_expected - watches_created
+
+        final_status: dict = {
             "status": "completed",
             "product_url": product_url,
             "logs": existing_logs,
@@ -98,7 +105,7 @@ async def handle_analyze_product(payload: dict):
                 "content_preview": result["product_info"]["content"][:500],
                 "url": result["product_info"].get("url", product_url),
             },
-            "risks_identified": len(result["risks"]),
+            "risks_identified": total_risks,
             "risks": [
                 {
                     "regulation_title": r.get("regulation_title", ""),
@@ -110,10 +117,21 @@ async def handle_analyze_product(payload: dict):
                 }
                 for r in result["risks"]
             ],
-            "watches_created": len(result["watches"]),
-            "watches": [serialize_watch(w) for w in result["watches"]],
-        })
-        logger.info(f"Completed analyze_product: job_id={job_id}")
+            "watches_created": watches_created,
+            "watches": [serialize_watch(w) for w in watches_stored],
+        }
+
+        if watches_failed > 0:
+            final_status["watches_failed"] = watches_failed
+            final_status["status"] = "completed_with_errors"
+            logger.warning(
+                "analyze_product job_id=%s: %d/%d watches failed to store",
+                job_id, watches_failed, watches_expected,
+            )
+        else:
+            logger.info(f"Completed analyze_product: job_id={job_id}")
+
+        set_analysis_status(job_id, final_status)
     except Exception as e:
         logger.exception(f"analyze_product failed: job_id={job_id}")
         _log(f"Error: {str(e)}")

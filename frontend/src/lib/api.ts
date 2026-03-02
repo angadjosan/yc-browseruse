@@ -111,10 +111,11 @@ export type OnboardLog = {
 
 export type OnboardStatus = {
   job_id?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "completed_with_errors" | "failed";
   product_url?: string;
   risks_identified?: number;
   watches_created?: number;
+  watches_failed?: number;
   watches?: Watch[];
   risks?: OnboardRiskRaw[];
   logs?: OnboardLog[];

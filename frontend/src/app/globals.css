@@ -109,3 +109,53 @@ body {
 .agent-pop-in {
   animation: agent-pop-in 0.38s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
 }
+
+/* Live streaming dot */
+@keyframes live-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.7);
+  }
+}
+
+.live-dot {
+  animation: live-dot 1.4s ease-in-out infinite;
+}
+
+/* Terminal blinking cursor */
+@keyframes terminal-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.terminal-cursor {
+  animation: terminal-blink 1s step-end infinite;
+  color: var(--primary);
+  font-size: 0.75rem;
+}
+
+/* Feed line slide-in */
+@keyframes feed-line-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.feed-line {
+  animation: feed-line-in 0.2s ease-out both;
+}

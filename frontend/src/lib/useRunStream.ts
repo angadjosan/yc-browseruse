@@ -3,20 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { api } from "./api";
+import { getAccessToken } from "./supabase";
 import type { Run, RunStep } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 /**
  * Combines SWR polling with SSE streaming for real-time run updates.
- * SSE gives sub-second step updates; SWR provides full data on completion.
- * Falls back to polling-only if SSE connection fails.
+ * Uses fetch + ReadableStream (instead of EventSource) so auth headers are sent.
+ * Falls back to polling-only if the stream connection fails.
  */
 export function useRunStream(runId: string | undefined) {
   const [sseSteps, setSseSteps] = useState<RunStep[]>([]);
   const [sseStatus, setSseStatus] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const {
     data: run,
@@ -44,52 +45,91 @@ export function useRunStream(runId: string | undefined) {
 
   useEffect(() => {
     if (!shouldStream || !runId) {
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
         setIsStreaming(false);
       }
       return;
     }
 
-    if (esRef.current) return;
+    if (abortRef.current) return;
 
-    const es = new EventSource(`${BASE}/api/runs/${runId}/stream`);
-    esRef.current = es;
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    es.onopen = () => setIsStreaming(true);
-
-    es.onmessage = (event) => {
+    (async () => {
       try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-          es.close();
-          esRef.current = null;
+        const token = await getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
+        const res = await fetch(`${BASE}/api/runs/${runId}/stream`, {
+          headers,
+          signal: controller.signal,
+        });
+
+        if (!res.ok || !res.body) {
           setIsStreaming(false);
+          abortRef.current = null;
           return;
         }
-        if (data.steps) setSseSteps(data.steps);
-        if (data.status) setSseStatus(data.status);
-        if (data.status === "completed" || data.status === "failed") {
-          es.close();
-          esRef.current = null;
-          setIsStreaming(false);
-          mutate();
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
 
-    es.onerror = () => {
-      setIsStreaming(false);
-      es.close();
-      esRef.current = null;
-    };
+        setIsStreaming(true);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE frames: lines starting with "data: "
+          const lines = buffer.split("\n");
+          // Keep the last incomplete line in the buffer
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.error) {
+                reader.cancel();
+                abortRef.current = null;
+                setIsStreaming(false);
+                return;
+              }
+              if (data.steps) setSseSteps(data.steps);
+              if (data.status) setSseStatus(data.status);
+              if (data.status === "completed" || data.status === "failed") {
+                reader.cancel();
+                abortRef.current = null;
+                setIsStreaming(false);
+                mutate();
+                return;
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        // Stream failed — fall back to polling
+      } finally {
+        setIsStreaming(false);
+        abortRef.current = null;
+      }
+    })();
 
     return () => {
-      es.close();
-      esRef.current = null;
+      controller.abort();
+      abortRef.current = null;
       setIsStreaming(false);
     };
   }, [shouldStream, runId, mutate]);

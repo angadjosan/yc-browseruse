@@ -10,6 +10,7 @@ from difflib import unified_diff
 from typing import Any, Dict, List, Optional
 
 from app.config import get_config
+from app.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,35 @@ class DiffEngine:
             self._anthropic = Anthropic(api_key=self._config["anthropic_api_key"])
         return self._anthropic
 
+    def _normalize_content(self, text: str) -> str:
+        """Normalize content to reduce false positives from extraction noise.
+
+        Strips common non-regulatory artifacts: navigation, timestamps,
+        cookie banners, whitespace differences, dynamic page elements.
+        """
+        if not text:
+            return ""
+        # Remove common dynamic/boilerplate patterns
+        noise_patterns = [
+            r"(?i)last (?:updated|modified|reviewed)\s*:?\s*\w+\s+\d{1,2},?\s*\d{4}",
+            r"(?i)copyright\s*©?\s*\d{4}",
+            r"(?i)all rights reserved\.?",
+            r"(?i)cookie\s*(?:policy|notice|consent|preferences)",
+            r"(?i)accept\s*(?:all\s*)?cookies?",
+            r"(?i)skip to (?:main )?content",
+            r"(?i)breadcrumb[s]?:.*",
+            r"(?i)you are here:.*",
+            r"(?i)share (?:this|on)\s*(?:facebook|twitter|linkedin|email)",
+            r"(?i)print this page",
+            r"(?i)subscribe to (?:updates|newsletter)",
+        ]
+        for pattern in noise_patterns:
+            text = re.sub(pattern, "", text)
+        # Collapse whitespace
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
     async def detect_changes(
         self,
         current_snapshot: Dict[str, Any],
@@ -42,18 +72,34 @@ class DiffEngine:
                 "semantic_diff": None,
             }
 
-        old_content = previous_snapshot.get("content_text") or previous_snapshot.get("content", "") or ""
-        new_content = current_snapshot.get("content_text") or current_snapshot.get("content", "") or ""
+        old_raw = previous_snapshot.get("content_text") or previous_snapshot.get("content", "") or ""
+        new_raw = current_snapshot.get("content_text") or current_snapshot.get("content", "") or ""
+
+        # Normalize to strip extraction noise before diffing
+        old_content = self._normalize_content(old_raw)
+        new_content = self._normalize_content(new_raw)
 
         text_diff = self._compute_text_diff(old_content, new_content)
 
-        # Only run semantic diff if there are meaningful text changes
-        semantic_diff = None
-        if text_diff.get("total_changes", 0) > 0:
-            semantic_diff = await self._compute_semantic_diff(
-                old_content, new_content,
-                current_snapshot.get("target_name", "Unknown"),
-            )
+        # Gate: only run semantic diff if there are enough meaningful text changes
+        total = text_diff.get("total_changes", 0)
+        if total == 0:
+            return {"has_changes": False, "text_diff": None, "semantic_diff": None}
+
+        # Run semantic diff with change-type classification
+        semantic_diff = await self._compute_semantic_diff(
+            old_content, new_content,
+            current_snapshot.get("target_name", "Unknown"),
+        )
+
+        # Gate: if Claude classifies as EDITORIAL, treat as no real change
+        change_type = (semantic_diff or {}).get("change_type", "SUBSTANTIVE")
+        is_real = (semantic_diff or {}).get("is_real_change", True)
+        product_relevant = (semantic_diff or {}).get("product_relevant", True)
+
+        if change_type == "EDITORIAL" or not is_real or not product_relevant:
+            logger.info(f"Change classified as {change_type} (real={is_real}, relevant={product_relevant}) — suppressing alert")
+            return {"has_changes": False, "text_diff": text_diff, "semantic_diff": semantic_diff}
 
         return {
             "has_changes": True,
@@ -84,7 +130,8 @@ class DiffEngine:
         if not client:
             raise RuntimeError("ANTHROPIC_API_KEY required for semantic diff")
 
-        prompt = f"""Analyze these two versions of compliance document "{target_name}" and identify meaningful changes.
+        system = load_prompt("diff_analysis_system")
+        prompt = f"""Analyze these two versions of compliance document "{target_name}".
 
 PREVIOUS VERSION:
 {old_content[:6000]}
@@ -92,31 +139,14 @@ PREVIOUS VERSION:
 CURRENT VERSION:
 {new_content[:6000]}
 
-Return your analysis as JSON with this exact structure:
-{{
-  "summary": "2-3 sentence summary of what changed",
-  "impact_level": "low|medium|high|critical",
-  "sections_affected": ["list", "of", "sections"],
-  "key_changes": [
-    {{"description": "what changed", "significance": "why it matters"}}
-  ],
-  "recommended_actions": ["specific step 1", "specific step 2"]
-}}
-
-Impact levels:
-- low: Minor clarifications, typos, formatting
-- medium: Updated procedures, new examples, scope changes
-- high: New requirements, deadline changes, significant policy shifts
-- critical: Major legal changes, immediate compliance requirements
-
-Return ONLY the JSON, no other text."""
+Classify the change type and return your analysis as JSON per the system instructions."""
 
         response = client.messages.create(
             model=self._config.get("claude_model", "claude-sonnet-4-20250514"),
             max_tokens=2048,
             temperature=0.0,
             messages=[{"role": "user", "content": prompt}],
-            system="You are a compliance expert analyzing regulatory changes. Return only valid JSON.",
+            system=system,
         )
         text = response.content[0].text if response.content else "{}"
         return self._parse_json_response(text)
@@ -135,8 +165,13 @@ Return ONLY the JSON, no other text."""
         if start != -1 and end != -1 and end > start:
             data = json.loads(text[start:end + 1])
             return {
+                "change_type": data.get("change_type", "SUBSTANTIVE"),
+                "is_real_change": data.get("is_real_change", True),
+                "confidence": data.get("confidence", 0.5),
                 "summary": data.get("summary", ""),
                 "impact_level": data.get("impact_level", "medium"),
+                "product_relevant": data.get("product_relevant", True),
+                "product_relevance_reasoning": data.get("product_relevance_reasoning", ""),
                 "sections_affected": data.get("sections_affected", []),
                 "key_changes": data.get("key_changes", []),
                 "recommended_actions": data.get("recommended_actions", []),

@@ -320,7 +320,7 @@ class OrchestratorEngine:
             watch=watch,
             run_id=run_id,
             spawn_handler=spawn_handler,
-            max_turns=20,
+            max_turns=10,
         )
 
     async def _research_regulatory_change(

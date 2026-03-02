@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import type { OnboardStatus, OnboardRiskRaw, OnboardLog } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
@@ -35,7 +36,6 @@ function getDisplayLogs(logs: OnboardLog[]): string[] {
   return logs
     .filter((l) => {
       const m = l.msg;
-      // Skip raw content dump lines and agent micro-steps
       if (m.startsWith("    |")) return false;
       if (/^\s+\[\d+\]/.test(m)) return false;
       if (m.startsWith("    Rationale:")) return false;
@@ -44,7 +44,6 @@ function getDisplayLogs(logs: OnboardLog[]): string[] {
     })
     .slice(-12)
     .map((l) => {
-      // Clean up step headers
       const m = l.msg.trim();
       if (m.startsWith("───") || m.endsWith("───")) {
         return m.replace(/─+/g, "").trim();
@@ -63,13 +62,142 @@ function formatInterval(seconds?: number): string {
   return "monthly";
 }
 
+// ── Inline auth form (login/signup on the analyze page) ──────────────────
+
+function InlineAuth({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const { signIn, signUp, session } = useAuth();
+  const [mode, setMode] = useState<"login" | "signup">("signup");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (session) onAuthenticated();
+  }, [session, onAuthenticated]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      if (mode === "login") {
+        await signIn(email, password);
+      } else {
+        await signUp(email, password, name);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="w-full max-w-xl">
+      <div className="rounded-2xl border border-border bg-card/80 p-8 backdrop-blur-sm shadow-2xl">
+        <h2 className="text-lg font-semibold text-foreground mb-1">
+          {mode === "signup" ? "Create an account to get started" : "Sign in to continue"}
+        </h2>
+        <p className="text-sm text-muted-foreground mb-6">
+          {mode === "signup"
+            ? "We'll analyze your product and set up compliance monitors."
+            : "Sign in to your existing account."}
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          {mode === "signup" && (
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              placeholder="Your name"
+            />
+          )}
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder="you@company.com"
+            autoFocus
+          />
+          <input
+            type="password"
+            required
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            placeholder="Password (6+ characters)"
+          />
+
+          {error && (
+            <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {submitting
+              ? "..."
+              : mode === "signup"
+                ? "Create account"
+                : "Sign in"}
+          </button>
+        </form>
+
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          {mode === "signup" ? (
+            <>
+              Already have an account?{" "}
+              <button
+                onClick={() => { setMode("login"); setError(""); }}
+                className="font-medium text-primary hover:underline"
+              >
+                Sign in
+              </button>
+            </>
+          ) : (
+            <>
+              Don&apos;t have an account?{" "}
+              <button
+                onClick={() => { setMode("signup"); setError(""); }}
+                className="font-medium text-primary hover:underline"
+              >
+                Sign up
+              </button>
+            </>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ────────────────────────────────────────────────────────────
+
 export default function AnalyzePage() {
   const router = useRouter();
+  const { session, loading } = useAuth();
   const [flowState, setFlowState] = useState<FlowState>("input");
   const [productUrl, setProductUrl] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<OnboardStatus | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Track whether we've passed auth (either already logged in or just signed up)
+  const [authed, setAuthed] = useState(false);
+  useEffect(() => {
+    if (session) setAuthed(true);
+  }, [session]);
 
   // Poll job status
   useEffect(() => {
@@ -118,6 +246,14 @@ export default function AnalyzePage() {
 
   const risks: OnboardRiskRaw[] = jobStatus?.risks ?? [];
 
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
   return (
     <div className="relative min-h-screen">
       {/* Background gradient */}
@@ -146,8 +282,13 @@ export default function AnalyzePage() {
           applies, and create monitors that alert you when anything changes.
         </p>
 
+        {/* ─── AUTH GATE ─── */}
+        {!authed && flowState === "input" && (
+          <InlineAuth onAuthenticated={() => setAuthed(true)} />
+        )}
+
         {/* ─── INPUT ─── */}
-        {flowState === "input" && (
+        {authed && flowState === "input" && (
           <div className="w-full max-w-xl">
             <div className="rounded-2xl border border-border bg-card/80 p-8 backdrop-blur-sm shadow-2xl">
               <label
